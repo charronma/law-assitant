@@ -1,0 +1,19 @@
+.DS_Store
+
+# Build outputs
+dist/
+build/
+bin/
+
+# Dependencies
+node_modules/
+web/node_modules/
+
+# Frontend artifacts
+web/dist/
+
+# Runtime data
+uploads/
+
+# Logs
+*.log
