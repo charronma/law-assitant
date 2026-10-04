@@ -37,6 +37,11 @@ type SSEEvent struct {
 
 // handleChat processes chat requests with SSE streaming response
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid request body")
@@ -54,19 +59,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if req.Module == "" {
 			module = store.ModuleConsult
 		}
-		session := s.sessionStore.Create(module, "")
+		session := s.sessionStore.Create(userID, module, "")
 		req.SessionID = session.ID
 	}
 
 	// Save user message
-	_, err := s.sessionStore.AddMessage(req.SessionID, "user", req.Message, req.FileIDs)
+	_, err := s.sessionStore.AddMessage(userID, req.SessionID, "user", req.Message, req.FileIDs)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Session not found")
 		return
 	}
 
 	// Get session to determine module
-	session, err := s.sessionStore.Get(req.SessionID)
+	session, err := s.sessionStore.Get(userID, req.SessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Session not found")
 		return
@@ -81,7 +86,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if moduleType == agent.ModuleContract && len(req.FileIDs) > 0 {
 		// Get document content
-		docContent := s.getFileContents(req.FileIDs)
+		docContent := s.getFileContents(userID, req.FileIDs)
 		contractAgent := s.agentManager.GetContractAgent()
 		streamReader, err = contractAgent.HandleWithDocument(r.Context(), messages, docContent)
 	} else {
@@ -146,7 +151,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// leave blank assistant turns in the history sent to the model)
 	msgID := ""
 	if fullContent.Len() > 0 {
-		assistantMsg, err := s.sessionStore.AddMessage(req.SessionID, "assistant", fullContent.String(), nil)
+		assistantMsg, err := s.sessionStore.AddMessage(userID, req.SessionID, "assistant", fullContent.String(), nil)
 		if err != nil {
 			log.Printf("Failed to save assistant message: %v", err)
 		} else {
@@ -187,11 +192,12 @@ func sendSSEEvent(w http.ResponseWriter, flusher http.Flusher, event SSEEvent) {
 	flusher.Flush()
 }
 
-// getFileContents retrieves and parses content from uploaded files
-func (s *Server) getFileContents(fileIDs []string) string {
+// getFileContents retrieves and parses content from the user's uploaded files.
+// IDs that do not exist or belong to someone else are silently skipped.
+func (s *Server) getFileContents(userID string, fileIDs []string) string {
 	var contents []string
 	for _, fileID := range fileIDs {
-		file, err := s.fileStore.Get(fileID)
+		file, err := s.fileStore.Get(userID, fileID)
 		if err != nil {
 			continue
 		}
@@ -210,7 +216,7 @@ func (s *Server) getFileContents(fileIDs []string) string {
 		}
 
 		// Cache the extracted text
-		s.fileStore.SetExtractedText(fileID, text)
+		s.fileStore.SetExtractedText(userID, fileID, text)
 		contents = append(contents, text)
 	}
 

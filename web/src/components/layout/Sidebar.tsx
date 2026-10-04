@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import {
   MessageSquare, FileText, FileCheck, FolderOpen, Search, Users,
-  Plus, Trash2, Scale,
+  Plus, Trash2, Scale, LogOut,
 } from 'lucide-react';
 import type { ModuleType, Session } from '../../types';
 import { listSessions, deleteSession } from '../../services/api';
+import { useAuth } from '../../auth/authContext';
 
 const MODULE_LIST: { type: ModuleType; name: string; icon: React.ReactNode }[] = [
   { type: 'consult', name: '法律咨询', icon: <MessageSquare size={18} /> },
@@ -33,6 +34,7 @@ export default function Sidebar({
   refreshKey,
 }: SidebarProps) {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const { user, signOut } = useAuth();
 
   useEffect(() => {
     listSessions().then(setSessions).catch(() => {});
@@ -117,6 +119,19 @@ export default function Sidebar({
             ))}
           </div>
         )}
+      </div>
+
+      {/* Account */}
+      <div className="p-3 border-t border-gray-700 flex items-center justify-between gap-2">
+        <span className="text-xs text-gray-400 truncate" title={user?.email}>{user?.email}</span>
+        <button
+          onClick={() => void signOut()}
+          className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors shrink-0"
+          title="退出登录"
+        >
+          <LogOut size={14} />
+          <span>退出</span>
+        </button>
       </div>
     </div>
   );

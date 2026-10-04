@@ -9,6 +9,11 @@ import (
 
 // handleUpload processes file upload requests
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+
 	// Limit request size
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUploadSize)
 
@@ -33,7 +38,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.FormValue("session_id")
 
 	// Save file
-	uploadedFile, err := s.fileStore.Save(sessionID, header.Filename, header.Header.Get("Content-Type"), header.Size, file)
+	uploadedFile, err := s.fileStore.Save(userID, sessionID, header.Filename, header.Header.Get("Content-Type"), header.Size, file)
 	if err != nil {
 		log.Printf("Failed to save uploaded file: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to save file")
@@ -45,7 +50,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("Warning: Failed to parse uploaded file %s: %v", uploadedFile.Filename, err)
 	} else {
-		s.fileStore.SetExtractedText(uploadedFile.ID, text)
+		s.fileStore.SetExtractedText(userID, uploadedFile.ID, text)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

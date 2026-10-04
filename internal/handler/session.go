@@ -16,6 +16,11 @@ type CreateSessionRequest struct {
 
 // handleCreateSession creates a new chat session
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+
 	var req CreateSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid request body")
@@ -27,13 +32,17 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		module = store.ModuleConsult
 	}
 
-	session := s.sessionStore.Create(module, req.Title)
+	session := s.sessionStore.Create(userID, module, req.Title)
 	writeJSON(w, http.StatusCreated, session)
 }
 
 // handleListSessions returns all chat sessions
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	sessions := s.sessionStore.List()
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	sessions := s.sessionStore.List(userID)
 
 	// Return summary without full messages
 	type SessionSummary struct {
@@ -64,13 +73,17 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 // handleGetSession returns a session with full message history
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "Session ID is required")
 		return
 	}
 
-	session, err := s.sessionStore.Get(id)
+	session, err := s.sessionStore.Get(userID, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Session not found")
 		return
@@ -81,13 +94,17 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteSession deletes a chat session
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "Session ID is required")
 		return
 	}
 
-	if err := s.sessionStore.Delete(id); err != nil {
+	if err := s.sessionStore.Delete(userID, id); err != nil {
 		writeError(w, http.StatusNotFound, "Session not found")
 		return
 	}

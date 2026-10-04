@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"law-assistant/internal/agent"
+	"law-assistant/internal/auth"
 	"law-assistant/internal/config"
 	"law-assistant/internal/handler"
 	"law-assistant/internal/model"
@@ -36,6 +37,16 @@ func main() {
 	}
 	log.Printf("Qwen ChatModel initialized successfully")
 
+	// Initialize authentication (fails closed when unconfigured)
+	authn, err := auth.New(ctx, auth.Config{
+		SupabaseURL: cfg.SupabaseURL,
+		JWTSecret:   cfg.SupabaseJWTSecret,
+		Disabled:    cfg.AuthDisabled,
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize authentication: %v", err)
+	}
+
 	// Initialize stores
 	sessionStore := store.NewSessionStore()
 	fileStore := store.NewFileStore(cfg.UploadDir)
@@ -45,7 +56,7 @@ func main() {
 	log.Printf("Agent manager initialized with %d modules", 6)
 
 	// Initialize HTTP server
-	srv := handler.NewServer(cfg, agentMgr, sessionStore, fileStore)
+	srv := handler.NewServer(cfg, agentMgr, sessionStore, fileStore, authn)
 	routes := srv.SetupRoutes()
 
 	httpServer := &http.Server{

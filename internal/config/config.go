@@ -21,6 +21,11 @@ type Config struct {
 
 	// Frontend
 	FrontendURL string
+
+	// Authentication (Supabase)
+	SupabaseURL       string // https://<project>.supabase.co
+	SupabaseJWTSecret string // legacy HS256 secret; optional when the project uses JWKS
+	AuthDisabled      bool   // local development only
 }
 
 // Load reads configuration from environment variables
@@ -43,6 +48,10 @@ func Load() (*Config, error) {
 		UploadDir:     getEnvOrDefault("UPLOAD_DIR", "./uploads"),
 		MaxUploadSize: 20 * 1024 * 1024, // 20MB
 		FrontendURL:   getEnvOrDefault("FRONTEND_URL", "http://localhost:5173"),
+
+		SupabaseURL:       os.Getenv("SUPABASE_URL"),
+		SupabaseJWTSecret: os.Getenv("SUPABASE_JWT_SECRET"),
+		AuthDisabled:      os.Getenv("AUTH_DISABLED") == "true",
 	}
 
 	// Ensure upload directory exists

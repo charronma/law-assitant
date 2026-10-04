@@ -2,6 +2,7 @@ package store
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -9,6 +10,10 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// ErrNotFound is returned when a session does not exist or belongs to another
+// user; callers cannot (and must not) tell the two apart.
+var ErrNotFound = errors.New("session not found")
 
 // Module represents the functional module type
 type Module string
@@ -35,6 +40,7 @@ type Message struct {
 // Session represents a chat session
 type Session struct {
 	ID           string    `json:"id"`
+	UserID       string    `json:"-"`
 	Module       Module    `json:"module"`
 	Title        string    `json:"title"`
 	Messages     []Message `json:"messages"`
@@ -56,8 +62,8 @@ func NewSessionStore() *SessionStore {
 	}
 }
 
-// Create creates a new session
-func (s *SessionStore) Create(module Module, title string) *Session {
+// Create creates a new session owned by userID
+func (s *SessionStore) Create(userID string, module Module, title string) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -67,6 +73,7 @@ func (s *SessionStore) Create(module Module, title string) *Session {
 
 	session := &Session{
 		ID:        uuid.New().String(),
+		UserID:    userID,
 		Module:    module,
 		Title:     title,
 		Messages:  make([]Message, 0),
@@ -75,32 +82,46 @@ func (s *SessionStore) Create(module Module, title string) *Session {
 	}
 
 	s.sessions[session.ID] = session
-	return session
+	snapshot := *session
+	return &snapshot
 }
 
-// Get returns a snapshot of the session with the given ID. The returned value
-// is a copy and is safe to read without holding the store lock.
-func (s *SessionStore) Get(id string) (*Session, error) {
+// owned returns the session if it exists and belongs to userID.
+// The caller must hold s.mu.
+func (s *SessionStore) owned(userID, id string) (*Session, error) {
+	session, ok := s.sessions[id]
+	if !ok || session.UserID != userID {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	return session, nil
+}
+
+// Get returns a snapshot of the user's session with the given ID. The returned
+// value is a copy and is safe to read without holding the store lock.
+func (s *SessionStore) Get(userID, id string) (*Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	session, ok := s.sessions[id]
-	if !ok {
-		return nil, fmt.Errorf("session not found: %s", id)
+	session, err := s.owned(userID, id)
+	if err != nil {
+		return nil, err
 	}
 	snapshot := *session
 	snapshot.Messages = slices.Clone(session.Messages)
 	return &snapshot, nil
 }
 
-// List returns session snapshots sorted by update time (newest first).
-// Messages are omitted; use Get to load the full history.
-func (s *SessionStore) List() []*Session {
+// List returns snapshots of the user's sessions sorted by update time (newest
+// first). Messages are omitted; use Get to load the full history.
+func (s *SessionStore) List(userID string) []*Session {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	sessions := make([]*Session, 0, len(s.sessions))
+	sessions := make([]*Session, 0)
 	for _, session := range s.sessions {
+		if session.UserID != userID {
+			continue
+		}
 		snapshot := *session
 		snapshot.Messages = nil
 		sessions = append(sessions, &snapshot)
@@ -114,25 +135,25 @@ func (s *SessionStore) List() []*Session {
 }
 
 // Delete removes a session
-func (s *SessionStore) Delete(id string) error {
+func (s *SessionStore) Delete(userID, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.sessions[id]; !ok {
-		return fmt.Errorf("session not found: %s", id)
+	if _, err := s.owned(userID, id); err != nil {
+		return err
 	}
 	delete(s.sessions, id)
 	return nil
 }
 
 // AddMessage adds a message to a session
-func (s *SessionStore) AddMessage(sessionID, role, content string, fileIDs []string) (*Message, error) {
+func (s *SessionStore) AddMessage(userID, sessionID, role, content string, fileIDs []string) (*Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	session, ok := s.sessions[sessionID]
-	if !ok {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+	session, err := s.owned(userID, sessionID)
+	if err != nil {
+		return nil, err
 	}
 
 	msg := Message{
@@ -161,13 +182,13 @@ func (s *SessionStore) AddMessage(sessionID, role, content string, fileIDs []str
 }
 
 // GetMessages returns all messages for a session
-func (s *SessionStore) GetMessages(sessionID string) ([]Message, error) {
+func (s *SessionStore) GetMessages(userID, sessionID string) ([]Message, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	session, ok := s.sessions[sessionID]
-	if !ok {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+	session, err := s.owned(userID, sessionID)
+	if err != nil {
+		return nil, err
 	}
 	return slices.Clone(session.Messages), nil
 }

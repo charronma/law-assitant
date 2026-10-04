@@ -1,10 +1,29 @@
 import type { ChatRequest, Session, SSEEvent, UploadedFile } from '../types';
 
+import { supabase } from '../lib/supabase';
+
 const API_BASE = '/api';
+
+async function authHeaders(): Promise<Record<string, string>> {
+  if (!supabase) return {};
+  // getSession() transparently refreshes an expired access token.
+  const { data } = await supabase.auth.getSession();
+  return data.session ? { Authorization: `Bearer ${data.session.access_token}` } : {};
+}
+
+/** fetch() against the API with the user's bearer token attached. */
+async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  for (const [k, v] of Object.entries(await authHeaders())) headers.set(k, v);
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  // The server rejected our token: drop the session so the login page shows.
+  if (res.status === 401 && supabase) void supabase.auth.signOut();
+  return res;
+}
 
 // Create a new session
 export async function createSession(module: string, title?: string): Promise<Session> {
-  const res = await fetch(`${API_BASE}/sessions`, {
+  const res = await apiFetch('/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ module, title: title || '' }),
@@ -15,7 +34,7 @@ export async function createSession(module: string, title?: string): Promise<Ses
 
 // List all sessions
 export async function listSessions(): Promise<Session[]> {
-  const res = await fetch(`${API_BASE}/sessions`);
+  const res = await apiFetch('/sessions');
   if (!res.ok) throw new Error('Failed to list sessions');
   const data = await res.json();
   return data.sessions || [];
@@ -23,14 +42,14 @@ export async function listSessions(): Promise<Session[]> {
 
 // Get a session with messages
 export async function getSession(id: string): Promise<Session> {
-  const res = await fetch(`${API_BASE}/sessions/${id}`);
+  const res = await apiFetch(`/sessions/${id}`);
   if (!res.ok) throw new Error('Failed to get session');
   return res.json();
 }
 
 // Delete a session
 export async function deleteSession(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/sessions/${id}`, { method: 'DELETE' });
+  const res = await apiFetch(`/sessions/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to delete session');
 }
 
@@ -40,7 +59,7 @@ export async function uploadFile(file: File, sessionId?: string): Promise<Upload
   formData.append('file', file);
   if (sessionId) formData.append('session_id', sessionId);
 
-  const res = await fetch(`${API_BASE}/upload`, {
+  const res = await apiFetch('/upload', {
     method: 'POST',
     body: formData,
   });
@@ -58,13 +77,17 @@ export function sendChatMessage(
 ): AbortController {
   const controller = new AbortController();
 
-  fetch(`${API_BASE}/chat`, {
+  apiFetch('/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
     signal: controller.signal,
   })
     .then(async (res) => {
+      if (res.status === 401) {
+        onError('登录已过期，请重新登录');
+        return;
+      }
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: 'Request failed' }));
         onError(err.error || 'Request failed');
