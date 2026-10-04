@@ -41,7 +41,8 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		ServerPort:    getEnvOrDefault("SERVER_PORT", "8080"),
+		// SERVER_PORT wins; many platforms (Render, Railway, Fly, Cloud Run) inject PORT.
+		ServerPort:    getEnvOrDefault("SERVER_PORT", getEnvOrDefault("PORT", "8080")),
 		QwenAPIKey:    apiKey,
 		QwenBaseURL:   getEnvOrDefault("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
 		QwenModel:     getEnvOrDefault("QWEN_MODEL", "qwen-max"),

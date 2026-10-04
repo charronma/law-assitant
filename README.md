@@ -11,6 +11,7 @@
 - **取证指导** - 根据案件类型指导证据收集方向和注意事项
 - **沟通话术** - 生成律师与客户/当事人的沟通策略和话术模板
 - **登录鉴权** - 基于 [Supabase Auth](https://supabase.com/auth)，会话与上传文件按用户隔离
+- **部署** - 见 [docs/DEPLOY.md](docs/DEPLOY.md)（Vercel + Docker 后端 + Supabase）
 
 ## 技术栈
 

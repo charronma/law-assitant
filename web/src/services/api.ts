@@ -2,7 +2,11 @@ import type { ChatRequest, Session, SSEEvent, UploadedFile } from '../types';
 
 import { supabase } from '../lib/supabase';
 
-const API_BASE = '/api';
+// Empty in development (Vite proxies /api). In production set VITE_API_BASE_URL to
+// the backend origin (no trailing slash) so the browser talks to it directly —
+// this avoids routing long-lived SSE streams through a static host's proxy.
+const API_ORIGIN = ((import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '').replace(/\/+$/, '');
+const API_BASE = `${API_ORIGIN}/api`;
 
 async function authHeaders(): Promise<Record<string, string>> {
   if (!supabase) return {};
