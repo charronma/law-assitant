@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { Message, ModuleType } from '../types';
 import { sendChatMessage, createSession, getSession } from '../services/api';
 
@@ -20,8 +20,10 @@ export function useChat({ module, sessionId, onSessionCreated }: UseChatOptions)
   /** 防止重复提交：同一时间只允许一个请求在途（不依赖 state，避免 Strict Mode 下双调导致发两次请求） */
   const requestInFlightRef = useRef(false);
 
-  // Keep ref in sync
-  currentSessionRef.current = sessionId;
+  // Keep ref in sync (refs must not be written during render)
+  useEffect(() => {
+    currentSessionRef.current = sessionId;
+  }, [sessionId]);
 
   const loadSession = useCallback(async (id: string) => {
     try {
@@ -125,24 +127,30 @@ export function useChat({ module, sessionId, onSessionCreated }: UseChatOptions)
     );
 
     abortRef.current = controller;
-  }, [isStreaming, module, onSessionCreated]);
+  }, [module, onSessionCreated]);
 
   const stopStreaming = useCallback(() => {
     abortRef.current?.abort();
+    // An aborted fetch never fires onDone/onError, so release the in-flight
+    // lock here — otherwise no further message could be sent after stopping.
+    doneHandledRef.current = true;
+    requestInFlightRef.current = false;
     setIsStreaming(false);
-    if (streamingContent) {
+
+    const partial = streamingContentRef.current;
+    if (partial) {
       const assistantMsg: Message = {
         id: `msg-${Date.now()}`,
         session_id: currentSessionRef.current || '',
         role: 'assistant',
-        content: streamingContent + '\n\n[已停止生成]',
+        content: partial + '\n\n[已停止生成]',
         created_at: new Date().toISOString(),
       };
       setMessages(prev => [...prev, assistantMsg]);
-      streamingContentRef.current = '';
-      setStreamingContent('');
     }
-  }, [streamingContent]);
+    streamingContentRef.current = '';
+    setStreamingContent('');
+  }, []);
 
   const clearMessages = useCallback(() => {
     setMessages([]);

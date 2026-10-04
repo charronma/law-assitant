@@ -39,14 +39,14 @@ echo -e "${GREEN}✓${NC} API Key 已配置"
 
 # ── 2. 检查 Go ──
 if ! command -v go &> /dev/null; then
-    echo -e "${RED}错误: 未找到 Go，请先安装 Go 1.21+${NC}"
+    echo -e "${RED}错误: 未找到 Go，请先安装 Go 1.24+${NC}"
     exit 1
 fi
 echo -e "${GREEN}✓${NC} Go $(go version | awk '{print $3}')"
 
 # ── 3. 检查 Node.js ──
 if ! command -v node &> /dev/null; then
-    echo -e "${RED}错误: 未找到 Node.js，请先安装 Node.js 18+${NC}"
+    echo -e "${RED}错误: 未找到 Node.js，请先安装 Node.js 20.19+ 或 22.12+${NC}"
     exit 1
 fi
 echo -e "${GREEN}✓${NC} Node $(node --version)"

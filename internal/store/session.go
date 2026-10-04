@@ -1,7 +1,9 @@
 package store
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -76,7 +78,8 @@ func (s *SessionStore) Create(module Module, title string) *Session {
 	return session
 }
 
-// Get returns a session by ID
+// Get returns a snapshot of the session with the given ID. The returned value
+// is a copy and is safe to read without holding the store lock.
 func (s *SessionStore) Get(id string) (*Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -85,27 +88,27 @@ func (s *SessionStore) Get(id string) (*Session, error) {
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", id)
 	}
-	return session, nil
+	snapshot := *session
+	snapshot.Messages = slices.Clone(session.Messages)
+	return &snapshot, nil
 }
 
-// List returns all sessions sorted by update time (newest first)
+// List returns session snapshots sorted by update time (newest first).
+// Messages are omitted; use Get to load the full history.
 func (s *SessionStore) List() []*Session {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	sessions := make([]*Session, 0, len(s.sessions))
 	for _, session := range s.sessions {
-		sessions = append(sessions, session)
+		snapshot := *session
+		snapshot.Messages = nil
+		sessions = append(sessions, &snapshot)
 	}
 
-	// Sort by updated_at descending
-	for i := 0; i < len(sessions); i++ {
-		for j := i + 1; j < len(sessions); j++ {
-			if sessions[j].UpdatedAt.After(sessions[i].UpdatedAt) {
-				sessions[i], sessions[j] = sessions[j], sessions[i]
-			}
-		}
-	}
+	slices.SortFunc(sessions, func(a, b *Session) int {
+		return cmp.Compare(b.UpdatedAt.UnixNano(), a.UpdatedAt.UnixNano())
+	})
 
 	return sessions
 }
@@ -166,7 +169,7 @@ func (s *SessionStore) GetMessages(sessionID string) ([]Message, error) {
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
-	return session.Messages, nil
+	return slices.Clone(session.Messages), nil
 }
 
 func getDefaultTitle(module Module) string {

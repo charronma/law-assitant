@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -22,9 +24,12 @@ type ChatRequest struct {
 	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
+// streamWriteTimeout bounds a single streaming chat response.
+const streamWriteTimeout = 10 * time.Minute
+
 // SSEEvent represents a server-sent event
 type SSEEvent struct {
-	Type      string `json:"type"`               // "token", "done", "error"
+	Type      string `json:"type"` // "token", "done", "error"
 	Content   string `json:"content,omitempty"`
 	MessageID string `json:"message_id,omitempty"`
 	Error     string `json:"error,omitempty"`
@@ -99,7 +104,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("X-Session-ID", req.SessionID)
+
+	// Long generations (e.g. contract review) can outlive the server-wide
+	// WriteTimeout; extend the deadline for this streaming response only.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(streamWriteTimeout)); err != nil {
+		log.Printf("Failed to extend write deadline: %v", err)
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -108,7 +120,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stream tokens to client
-	var fullContent string
+	var fullContent strings.Builder
 	defer streamReader.Close()
 
 	for {
@@ -125,22 +137,24 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 		content := msg.Content
 		if content != "" {
-			fullContent += content
+			fullContent.WriteString(content)
 			sendSSEEvent(w, flusher, SSEEvent{Type: "token", Content: content})
 		}
 	}
 
-	// Save assistant message
-	assistantMsg, err := s.sessionStore.AddMessage(req.SessionID, "assistant", fullContent, nil)
-	if err != nil {
-		log.Printf("Failed to save assistant message: %v", err)
+	// Save assistant message (skip empty replies so a failed stream does not
+	// leave blank assistant turns in the history sent to the model)
+	msgID := ""
+	if fullContent.Len() > 0 {
+		assistantMsg, err := s.sessionStore.AddMessage(req.SessionID, "assistant", fullContent.String(), nil)
+		if err != nil {
+			log.Printf("Failed to save assistant message: %v", err)
+		} else {
+			msgID = assistantMsg.ID
+		}
 	}
 
 	// Send done event
-	msgID := ""
-	if assistantMsg != nil {
-		msgID = assistantMsg.ID
-	}
 	sendSSEEvent(w, flusher, SSEEvent{Type: "done", MessageID: msgID})
 }
 
@@ -200,16 +214,5 @@ func (s *Server) getFileContents(fileIDs []string) string {
 		contents = append(contents, text)
 	}
 
-	return fmt.Sprintf("文件内容如下：\n\n%s", joinWithSeparator(contents))
-}
-
-func joinWithSeparator(parts []string) string {
-	result := ""
-	for i, part := range parts {
-		if i > 0 {
-			result += "\n\n---\n\n"
-		}
-		result += part
-	}
-	return result
+	return fmt.Sprintf("文件内容如下：\n\n%s", strings.Join(contents, "\n\n---\n\n"))
 }

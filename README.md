@@ -24,8 +24,8 @@
 
 ### 前置条件
 
-- Go 1.21+
-- Node.js 18+
+- Go 1.24+
+- Node.js 20.19+ 或 22.12+（Vite 8 要求）
 - 阿里云百炼 API Key（[获取地址](https://bailian.console.aliyun.com/)，进入控制台 -> API-KEY 管理 -> 创建 API Key）
 
 ### 方式一：一键启动脚本（推荐）

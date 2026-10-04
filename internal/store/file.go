@@ -25,8 +25,8 @@ type UploadedFile struct {
 
 // FileStore manages uploaded files
 type FileStore struct {
-	mu       sync.RWMutex
-	files    map[string]*UploadedFile
+	mu        sync.RWMutex
+	files     map[string]*UploadedFile
 	uploadDir string
 }
 
