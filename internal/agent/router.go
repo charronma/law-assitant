@@ -1,10 +1,6 @@
 package agent
 
-import (
-	"fmt"
-
-	"github.com/cloudwego/eino/components/model"
-)
+import "fmt"
 
 // AgentManager manages all agent instances and routes requests
 type AgentManager struct {
@@ -12,14 +8,14 @@ type AgentManager struct {
 }
 
 // NewAgentManager creates a new agent manager with all agents initialized
-func NewAgentManager(chatModel model.ChatModel) *AgentManager {
+func NewAgentManager(models ModelProvider) *AgentManager {
 	agents := map[ModuleType]Agent{
-		ModuleConsult:       NewConsultAgent(chatModel),
-		ModulePleading:      NewPleadingAgent(chatModel),
-		ModuleContract:      NewContractAgent(chatModel),
-		ModuleEvidenceOrg:   NewEvidenceOrgAgent(chatModel),
-		ModuleEvidence:      NewEvidenceAgent(chatModel),
-		ModuleCommunication: NewCommunicationAgent(chatModel),
+		ModuleConsult:       NewConsultAgent(models),
+		ModulePleading:      NewPleadingAgent(models),
+		ModuleContract:      NewContractAgent(models),
+		ModuleEvidenceOrg:   NewEvidenceOrgAgent(models),
+		ModuleEvidence:      NewEvidenceAgent(models),
+		ModuleCommunication: NewCommunicationAgent(models),
 	}
 
 	return &AgentManager{

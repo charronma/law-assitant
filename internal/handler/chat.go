@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,27 +14,31 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"law-assistant/internal/agent"
+	"law-assistant/internal/model"
 	"law-assistant/internal/store"
 )
 
 // ChatRequest represents a chat API request
 type ChatRequest struct {
-	SessionID string            `json:"session_id"`
-	Module    string            `json:"module"`
-	Message   string            `json:"message"`
-	FileIDs   []string          `json:"file_ids,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	SessionID string `json:"session_id"`
+	Module    string `json:"module"`
+	Message   string `json:"message"`
+	// Model optionally picks the model for this turn; empty means the default.
+	Model    string            `json:"model,omitempty"`
+	FileIDs  []string          `json:"file_ids,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // streamWriteTimeout bounds a single streaming chat response.
 const streamWriteTimeout = 10 * time.Minute
 
-// SSEEvent represents a server-sent event
+// SSEEvent represents a server-sent "token" or "done" event. Failures that
+// happen after streaming has started are sent as a separate `event: error`
+// carrying a model.APIError.
 type SSEEvent struct {
-	Type      string `json:"type"` // "token", "done", "error"
+	Type      string `json:"type"` // "token", "done"
 	Content   string `json:"content,omitempty"`
 	MessageID string `json:"message_id,omitempty"`
-	Error     string `json:"error,omitempty"`
 }
 
 // handleChat processes chat requests with SSE streaming response
@@ -51,6 +56,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if req.Message == "" {
 		writeError(w, http.StatusBadRequest, "Message is required")
+		return
+	}
+
+	modelID, err := s.models.Resolve(req.Model)
+	if err != nil {
+		writeAPIError(w, &model.APIError{
+			Status:  http.StatusBadRequest,
+			Code:    model.CodeInvalidModel,
+			Message: "不支持的模型",
+		})
 		return
 	}
 
@@ -72,22 +87,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		req.SessionID = created.ID
 	}
 
-	// Save user message
-	_, err := s.sessionStore.AddMessage(r.Context(), userID, req.SessionID, "user", req.Message, req.FileIDs)
-	if err != nil {
-		writeStoreError(w, err, "save user message")
-		return
-	}
-
-	// Get session (with history) to determine module
+	// Load the session (this also proves the caller owns it) and build the
+	// conversation to send. The new user message is added in memory only; it is
+	// persisted below, once the model has accepted the request.
 	session, err := s.sessionStore.Get(r.Context(), userID, req.SessionID)
 	if err != nil {
 		writeStoreError(w, err, "load session")
 		return
 	}
-
-	// Build message history for the agent
-	messages := buildSchemaMessages(session.Messages)
+	messages := append(buildSchemaMessages(session.Messages), schema.UserMessage(req.Message))
 
 	// Handle file content injection for contract module
 	moduleType := agent.ModuleType(session.Module)
@@ -97,7 +105,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// Get document content
 		docContent := s.getFileContents(userID, req.FileIDs)
 		contractAgent := s.agentManager.GetContractAgent()
-		streamReader, err = contractAgent.HandleWithDocument(r.Context(), messages, docContent)
+		streamReader, err = contractAgent.HandleWithDocument(r.Context(), modelID, messages, docContent)
 	} else {
 		// Get the appropriate agent
 		agnt, agentErr := s.agentManager.GetAgent(moduleType)
@@ -105,12 +113,29 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("Unknown module: %s", session.Module))
 			return
 		}
-		streamReader, err = agnt.Handle(r.Context(), messages)
+		streamReader, err = agnt.Handle(r.Context(), modelID, messages)
+	}
+	if err != nil {
+		s.writeModelError(w, err, modelID)
+		return
+	}
+	defer streamReader.Close()
+
+	// Wait for the first chunk before committing to a streaming response.
+	// Providers can accept the request (HTTP 200) and still fail on the first
+	// SSE chunk; failing here lets the client handle every "request rejected"
+	// case the same way: a plain HTTP error with a JSON body.
+	msg, recvErr := streamReader.Recv()
+	if recvErr != nil && !errors.Is(recvErr, io.EOF) {
+		s.writeModelError(w, recvErr, modelID)
+		return
 	}
 
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to process request")
-		log.Printf("Agent error: %v", err)
+	// The model took the request: record the user's turn. A rejected attempt
+	// (quota, rate limit, ...) leaves no trace, so retrying with another model
+	// does not duplicate the message in the history.
+	if _, err := s.sessionStore.AddMessage(r.Context(), userID, req.SessionID, "user", req.Message, modelID, req.FileIDs); err != nil {
+		writeStoreError(w, err, "save user message")
 		return
 	}
 
@@ -135,25 +160,25 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// Stream tokens to client
 	var fullContent strings.Builder
-	defer streamReader.Close()
-
+	streamFailed := false
 	for {
-		msg, err := streamReader.Recv()
-		if err != nil {
-			if err == io.EOF {
-				break
+		if recvErr != nil {
+			if !errors.Is(recvErr, io.EOF) {
+				// Failure after output began: same JSON as a plain HTTP error,
+				// carried by an SSE "error" event.
+				apiErr := model.Classify(recvErr, modelID)
+				log.Printf("Stream error (model=%s): %v", modelID, recvErr)
+				sendSSEError(w, flusher, apiErr)
+				streamFailed = true
 			}
-			// Send error event
-			sendSSEEvent(w, flusher, SSEEvent{Type: "error", Error: err.Error()})
-			log.Printf("Stream error: %v", err)
 			break
 		}
 
-		content := msg.Content
-		if content != "" {
-			fullContent.WriteString(content)
-			sendSSEEvent(w, flusher, SSEEvent{Type: "token", Content: content})
+		if msg != nil && msg.Content != "" {
+			fullContent.WriteString(msg.Content)
+			sendSSEEvent(w, flusher, SSEEvent{Type: "token", Content: msg.Content})
 		}
+		msg, recvErr = streamReader.Recv()
 	}
 
 	// Save assistant message (skip empty replies so a failed stream does not
@@ -164,7 +189,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// mid-stream should not lose the reply that was already generated.
 		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 		defer cancel()
-		assistantMsg, err := s.sessionStore.AddMessage(saveCtx, userID, req.SessionID, "assistant", fullContent.String(), nil)
+		assistantMsg, err := s.sessionStore.AddMessage(saveCtx, userID, req.SessionID, "assistant", fullContent.String(), modelID, nil)
 		if err != nil {
 			log.Printf("Failed to save assistant message: %v", err)
 		} else {
@@ -172,8 +197,29 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Send done event
+	// A failed stream already ended with its error event.
+	if streamFailed {
+		return
+	}
 	sendSSEEvent(w, flusher, SSEEvent{Type: "done", MessageID: msgID})
+}
+
+// writeModelError logs the raw upstream failure and sends the classified,
+// client-safe version (never the raw error) as an HTTP error.
+func (s *Server) writeModelError(w http.ResponseWriter, err error, modelID string) {
+	log.Printf("Model error (model=%s): %v", modelID, err)
+	writeAPIError(w, model.Classify(err, modelID))
+}
+
+// sendSSEError sends a failure that happened after streaming started.
+func sendSSEError(w http.ResponseWriter, flusher http.Flusher, apiErr *model.APIError) {
+	data, err := json.Marshal(apiErr)
+	if err != nil {
+		log.Printf("Failed to marshal SSE error: %v", err)
+		return
+	}
+	fmt.Fprintf(w, "event: error\ndata: %s\n\n", data)
+	flusher.Flush()
 }
 
 // buildSchemaMessages converts store messages to schema messages

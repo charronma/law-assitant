@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
 	"law-assistant/internal/prompt"
@@ -12,32 +11,27 @@ import (
 
 // ContractAgent handles contract review and optimization
 type ContractAgent struct {
-	chatModel model.ChatModel
+	models ModelProvider
 }
 
 // NewContractAgent creates a new ContractAgent
-func NewContractAgent(chatModel model.ChatModel) *ContractAgent {
+func NewContractAgent(models ModelProvider) *ContractAgent {
 	return &ContractAgent{
-		chatModel: chatModel,
+		models: models,
 	}
 }
 
 // Handle processes contract review requests with streaming response
-func (a *ContractAgent) Handle(ctx context.Context, messages []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+func (a *ContractAgent) Handle(ctx context.Context, modelID string, messages []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
 	fullMessages := make([]*schema.Message, 0, len(messages)+1)
 	fullMessages = append(fullMessages, schema.SystemMessage(prompt.ContractSystemPrompt))
 	fullMessages = append(fullMessages, messages...)
 
-	streamReader, err := a.chatModel.Stream(ctx, fullMessages)
-	if err != nil {
-		return nil, err
-	}
-
-	return streamReader, nil
+	return stream(ctx, a.models, modelID, fullMessages)
 }
 
 // HandleWithDocument processes contract review with document content
-func (a *ContractAgent) HandleWithDocument(ctx context.Context, messages []*schema.Message, documentContent string) (*schema.StreamReader[*schema.Message], error) {
+func (a *ContractAgent) HandleWithDocument(ctx context.Context, modelID string, messages []*schema.Message, documentContent string) (*schema.StreamReader[*schema.Message], error) {
 	fullMessages := make([]*schema.Message, 0, len(messages)+2)
 	fullMessages = append(fullMessages, schema.SystemMessage(prompt.ContractSystemPrompt))
 
@@ -49,10 +43,5 @@ func (a *ContractAgent) HandleWithDocument(ctx context.Context, messages []*sche
 
 	fullMessages = append(fullMessages, messages...)
 
-	streamReader, err := a.chatModel.Stream(ctx, fullMessages)
-	if err != nil {
-		return nil, err
-	}
-
-	return streamReader, nil
+	return stream(ctx, a.models, modelID, fullMessages)
 }

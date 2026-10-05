@@ -3,6 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
+
+	"law-assistant/internal/model"
 )
 
 // Config holds the application configuration
@@ -13,7 +16,11 @@ type Config struct {
 	// Qwen model configuration
 	QwenAPIKey  string
 	QwenBaseURL string
-	QwenModel   string
+	// QwenModel is the default model (QWEN_MODEL). It must be one of QwenModels.
+	QwenModel string
+	// QwenModels is the allow-list of models users may pick (QWEN_MODELS),
+	// in display order.
+	QwenModels []string
 
 	// File upload configuration
 	UploadDir     string
@@ -43,12 +50,23 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("请设置 DASHSCOPE_API_KEY 环境变量（从 https://bailian.console.aliyun.com/ 获取 API Key）")
 	}
 
+	models := ParseModelList(os.Getenv("QWEN_MODELS"))
+	if len(models) == 0 {
+		models = model.DefaultIDs()
+	}
+	defaultModel := getEnvOrDefault("QWEN_MODEL", model.DefaultModelID)
+	if !contains(models, defaultModel) {
+		return nil, fmt.Errorf("默认模型 %q（QWEN_MODEL，未设置时为 %s）不在 QWEN_MODELS 白名单内：%s。请把它加入 QWEN_MODELS，或用 QWEN_MODEL 指定白名单内的模型",
+			defaultModel, model.DefaultModelID, strings.Join(models, ","))
+	}
+
 	cfg := &Config{
 		// SERVER_PORT wins; many platforms (Render, Railway, Fly, Cloud Run) inject PORT.
 		ServerPort:    getEnvOrDefault("SERVER_PORT", getEnvOrDefault("PORT", "8080")),
 		QwenAPIKey:    apiKey,
 		QwenBaseURL:   getEnvOrDefault("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-		QwenModel:     getEnvOrDefault("QWEN_MODEL", "qwen-max"),
+		QwenModel:     defaultModel,
+		QwenModels:    models,
 		UploadDir:     getEnvOrDefault("UPLOAD_DIR", "./uploads"),
 		MaxUploadSize: 20 * 1024 * 1024, // 20MB
 		FrontendURL:   getEnvOrDefault("FRONTEND_URL", "http://localhost:5173"),
@@ -65,6 +83,31 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// ParseModelList splits a comma-separated list of model ids, trimming spaces
+// and dropping blanks and duplicates while keeping the first-seen order.
+func ParseModelList(s string) []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, part := range strings.Split(s, ",") {
+		id := strings.TrimSpace(part)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func getEnvOrDefault(key, defaultVal string) string {

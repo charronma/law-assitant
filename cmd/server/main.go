@@ -26,16 +26,15 @@ func main() {
 	}
 
 	log.Printf("Starting AI Law Assistant Server...")
-	log.Printf("Using model: %s", cfg.QwenModel)
+	log.Printf("Default model: %s (%d selectable)", cfg.QwenModel, len(cfg.QwenModels))
 	log.Printf("API BaseURL: %s", cfg.QwenBaseURL)
 
-	// Initialize Qwen ChatModel
+	// Model registry: chat models are created lazily, per model id
 	ctx := context.Background()
-	chatModel, err := model.NewQwenChatModel(ctx, cfg)
+	models, err := model.NewRegistry(cfg.QwenBaseURL, cfg.QwenAPIKey, cfg.QwenModels, cfg.QwenModel)
 	if err != nil {
-		log.Fatalf("Failed to initialize Qwen model: %v", err)
+		log.Fatalf("Failed to initialize model registry: %v", err)
 	}
-	log.Printf("Qwen ChatModel initialized successfully")
 
 	// Initialize authentication (fails closed when unconfigured)
 	authn, err := auth.New(ctx, auth.Config{
@@ -52,11 +51,11 @@ func main() {
 	fileStore := store.NewFileStore(cfg.UploadDir)
 
 	// Initialize agent manager
-	agentMgr := agent.NewAgentManager(chatModel)
+	agentMgr := agent.NewAgentManager(models)
 	log.Printf("Agent manager initialized with %d modules", 6)
 
 	// Initialize HTTP server
-	srv := handler.NewServer(cfg, agentMgr, sessionStore, fileStore, authn)
+	srv := handler.NewServer(cfg, agentMgr, sessionStore, fileStore, authn, models)
 	routes := srv.SetupRoutes()
 
 	httpServer := &http.Server{

@@ -9,6 +9,7 @@ import (
 	"law-assistant/internal/agent"
 	"law-assistant/internal/auth"
 	"law-assistant/internal/config"
+	"law-assistant/internal/model"
 	"law-assistant/internal/store"
 	"law-assistant/internal/tool"
 )
@@ -21,10 +22,11 @@ type Server struct {
 	fileStore    *store.FileStore
 	docParser    *tool.DocumentParser
 	auth         *auth.Authenticator
+	models       *model.Registry
 }
 
 // NewServer creates a new server with all dependencies
-func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore store.SessionRepository, fileStore *store.FileStore, authn *auth.Authenticator) *Server {
+func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore store.SessionRepository, fileStore *store.FileStore, authn *auth.Authenticator, models *model.Registry) *Server {
 	return &Server{
 		cfg:          cfg,
 		agentManager: agentMgr,
@@ -32,6 +34,7 @@ func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore st
 		fileStore:    fileStore,
 		docParser:    tool.NewDocumentParser(),
 		auth:         authn,
+		models:       models,
 	}
 }
 
@@ -47,6 +50,7 @@ func (s *Server) SetupRoutes() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("GET /api/modules", s.handleListModules)
+	mux.HandleFunc("GET /api/models", s.handleListModels)
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +106,19 @@ func writeStoreError(w http.ResponseWriter, err error, action string) {
 		log.Printf("%s: %v", action, err)
 		writeError(w, http.StatusInternalServerError, "Internal server error")
 	}
+}
+
+// handleListModels returns the models users may choose from and the default.
+func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":  s.models.Models(),
+		"default": s.models.Default(),
+	})
+}
+
+// writeAPIError sends a structured model/request error: {"code","model","message"}.
+func writeAPIError(w http.ResponseWriter, e *model.APIError) {
+	writeJSON(w, e.Status, e)
 }
 
 // writeJSON writes a JSON response

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 
-	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
 	"law-assistant/internal/prompt"
@@ -11,28 +10,23 @@ import (
 
 // ConsultAgent handles legal consultation conversations
 type ConsultAgent struct {
-	chatModel model.ChatModel
+	models ModelProvider
 }
 
 // NewConsultAgent creates a new ConsultAgent
-func NewConsultAgent(chatModel model.ChatModel) *ConsultAgent {
+func NewConsultAgent(models ModelProvider) *ConsultAgent {
 	return &ConsultAgent{
-		chatModel: chatModel,
+		models: models,
 	}
 }
 
 // Handle processes legal consultation messages with streaming response
-func (a *ConsultAgent) Handle(ctx context.Context, messages []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+func (a *ConsultAgent) Handle(ctx context.Context, modelID string, messages []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
 	// Prepend system prompt
 	fullMessages := make([]*schema.Message, 0, len(messages)+1)
 	fullMessages = append(fullMessages, schema.SystemMessage(prompt.ConsultSystemPrompt))
 	fullMessages = append(fullMessages, messages...)
 
 	// Stream response from LLM
-	streamReader, err := a.chatModel.Stream(ctx, fullMessages)
-	if err != nil {
-		return nil, err
-	}
-
-	return streamReader, nil
+	return stream(ctx, a.models, modelID, fullMessages)
 }

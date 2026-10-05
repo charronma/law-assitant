@@ -1,8 +1,11 @@
-import type { ModuleType } from '../../types';
+import { useCallback, useEffect } from 'react';
+import type { ChatError, ModuleType } from '../../types';
 import { useChat } from '../../hooks/useChat';
+import { useModels } from '../../hooks/useModels';
 import MessageList from './MessageList';
 import ChatInput from './ChatInput';
-import { useEffect } from 'react';
+import ModelSelect from './ModelSelect';
+import ErrorBanner from './ErrorBanner';
 
 const MODULE_NAMES: Record<ModuleType, string> = {
   consult: '法律咨询',
@@ -21,16 +24,34 @@ interface ChatWindowProps {
 }
 
 export default function ChatWindow({ module, sessionId, onSessionCreated, onNewChat }: ChatWindowProps) {
+  const { models, selected, select, exhausted, markExhausted } = useModels();
+
+  // Remember models that ran out of quota so the picker can flag them.
+  const handleChatError = useCallback(
+    (err: ChatError) => {
+      if (err.code === 'QUOTA_EXHAUSTED' && err.model) markExhausted(err.model);
+    },
+    [markExhausted],
+  );
+
   const {
     messages,
     streamingContent,
     isStreaming,
     error,
     sendMessage,
+    retryLast,
+    dismissError,
     stopStreaming,
     clearMessages,
     loadSession,
-  } = useChat({ module, sessionId, onSessionCreated });
+  } = useChat({
+    module,
+    sessionId,
+    model: selected || undefined,
+    onSessionCreated,
+    onError: handleChatError,
+  });
 
   // Load session when sessionId changes
   useEffect(() => {
@@ -46,19 +67,33 @@ export default function ChatWindow({ module, sessionId, onSessionCreated, onNewC
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white">
         <h2 className="text-base font-semibold text-gray-800">{MODULE_NAMES[module]}</h2>
-        <button
-          onClick={onNewChat}
-          className="text-sm text-indigo-600 hover:text-indigo-700 font-medium"
-        >
-          + 新建对话
-        </button>
+        <div className="flex items-center gap-4">
+          {models.length > 0 && (
+            <ModelSelect models={models} value={selected} onChange={select} exhausted={exhausted} />
+          )}
+          <button
+            onClick={onNewChat}
+            className="text-sm text-indigo-600 hover:text-indigo-700 font-medium"
+          >
+            + 新建对话
+          </button>
+        </div>
       </div>
 
       {/* Error banner */}
       {error && (
-        <div className="mx-4 mt-2 px-4 py-2 bg-red-50 text-red-600 text-sm rounded-lg">
-          {error}
-        </div>
+        <ErrorBanner
+          error={error}
+          models={models}
+          selected={selected}
+          exhausted={exhausted}
+          onDismiss={dismissError}
+          onSelectModel={select}
+          onRetry={modelId => {
+            if (modelId) select(modelId);
+            retryLast(modelId);
+          }}
+        />
       )}
 
       {/* Messages */}

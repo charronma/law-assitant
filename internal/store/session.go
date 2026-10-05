@@ -34,7 +34,7 @@ type SessionRepository interface {
 	// List returns session summaries (no messages), newest first.
 	List(ctx context.Context, userID string) ([]*Session, error)
 	Delete(ctx context.Context, userID, id string) error
-	AddMessage(ctx context.Context, userID, sessionID, role, content string, fileIDs []string) (*Message, error)
+	AddMessage(ctx context.Context, userID, sessionID, role, content, model string, fileIDs []string) (*Message, error)
 }
 
 // Module represents the functional module type
@@ -60,11 +60,13 @@ func (m Module) Valid() bool {
 
 // Message represents a single chat message
 type Message struct {
-	ID        string    `json:"id"`
-	SessionID string    `json:"session_id"`
-	Role      string    `json:"role"` // "user" or "assistant"
-	Content   string    `json:"content"`
-	FileIDs   []string  `json:"file_ids,omitempty"`
+	ID        string   `json:"id"`
+	SessionID string   `json:"session_id"`
+	Role      string   `json:"role"` // "user" or "assistant"
+	Content   string   `json:"content"`
+	FileIDs   []string `json:"file_ids,omitempty"`
+	// Model is the id of the model used for this turn (empty for old messages).
+	Model     string    `json:"model,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -179,7 +181,7 @@ func (s *SessionStore) Delete(_ context.Context, userID, id string) error {
 }
 
 // AddMessage adds a message to a session
-func (s *SessionStore) AddMessage(_ context.Context, userID, sessionID, role, content string, fileIDs []string) (*Message, error) {
+func (s *SessionStore) AddMessage(_ context.Context, userID, sessionID, role, content, model string, fileIDs []string) (*Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -194,6 +196,7 @@ func (s *SessionStore) AddMessage(_ context.Context, userID, sessionID, role, co
 		Role:      role,
 		Content:   content,
 		FileIDs:   fileIDs,
+		Model:     model,
 		CreatedAt: time.Now(),
 	}
 

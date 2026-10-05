@@ -15,8 +15,10 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"law-assistant/internal/agent"
 	"law-assistant/internal/auth"
 	"law-assistant/internal/config"
+	"law-assistant/internal/model"
 	"law-assistant/internal/store"
 )
 
@@ -26,6 +28,7 @@ type testEnv struct {
 	srv   *Server
 	h     http.Handler
 	files *store.FileStore
+	llm   *fakeLLM
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -36,10 +39,13 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	cfg := &config.Config{FrontendURL: "http://localhost:5173", MaxUploadSize: 1 << 20}
 	files := store.NewFileStore(t.TempDir())
-	// The agent manager is never reached by these tests: every chat case below
-	// is rejected before an agent is selected.
-	srv := NewServer(cfg, nil, store.NewSessionStore(), files, authn)
-	return &testEnv{srv: srv, h: srv.SetupRoutes(), files: files}
+	llm := newFakeLLM()
+	registry, err := model.NewRegistryWithFactory(model.DefaultIDs(), model.DefaultModelID, llm.factory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(cfg, agent.NewAgentManager(registry), store.NewSessionStore(), files, authn, registry)
+	return &testEnv{srv: srv, h: srv.SetupRoutes(), files: files, llm: llm}
 }
 
 func token(t *testing.T, user string) string {
@@ -68,7 +74,12 @@ func (e *testEnv) do(method, path, bearer string, body io.Reader, contentType st
 
 func (e *testEnv) createSession(t *testing.T, bearer string) string {
 	t.Helper()
-	rec := e.do("POST", "/api/sessions", bearer, strings.NewReader(`{"module":"consult"}`), "application/json")
+	return e.createSessionFor(t, bearer, "consult")
+}
+
+func (e *testEnv) createSessionFor(t *testing.T, bearer, module string) string {
+	t.Helper()
+	rec := e.do("POST", "/api/sessions", bearer, strings.NewReader(`{"module":"`+module+`"}`), "application/json")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create session: %d %s", rec.Code, rec.Body)
 	}
@@ -85,6 +96,7 @@ func TestAPIRequiresAuthentication(t *testing.T) {
 	e := newTestEnv(t)
 	for _, tc := range []struct{ method, path string }{
 		{"GET", "/api/modules"},
+		{"GET", "/api/models"},
 		{"GET", "/api/sessions"},
 		{"POST", "/api/sessions"},
 		{"GET", "/api/sessions/some-id"},
@@ -212,7 +224,7 @@ func (f failingRepo) Create(context.Context, string, store.Module, string) (*sto
 func (f failingRepo) Get(context.Context, string, string) (*store.Session, error) { return nil, f.err }
 func (f failingRepo) List(context.Context, string) ([]*store.Session, error)      { return nil, f.err }
 func (f failingRepo) Delete(context.Context, string, string) error                { return f.err }
-func (f failingRepo) AddMessage(context.Context, string, string, string, string, []string) (*store.Message, error) {
+func (f failingRepo) AddMessage(context.Context, string, string, string, string, string, []string) (*store.Message, error) {
 	return nil, f.err
 }
 
@@ -236,7 +248,7 @@ func TestStoreErrorsMapToHTTPStatuses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := NewServer(cfg, nil, failingRepo{err: tc.err}, store.NewFileStore(t.TempDir()), authn)
+			srv := NewServer(cfg, nil, failingRepo{err: tc.err}, store.NewFileStore(t.TempDir()), authn, nil)
 			e := &testEnv{srv: srv, h: srv.SetupRoutes()}
 			if rec := e.do("GET", "/api/sessions", alice, nil, ""); rec.Code != tc.want {
 				t.Errorf("GET /api/sessions: got %d, want %d", rec.Code, tc.want)
@@ -249,7 +261,7 @@ func TestStoreErrorsMapToHTTPStatuses(t *testing.T) {
 
 	// Internal error details must never reach the client.
 	secret := "connection to db.internal:5432 failed"
-	srv := NewServer(cfg, nil, failingRepo{err: errors.New(secret)}, store.NewFileStore(t.TempDir()), authn)
+	srv := NewServer(cfg, nil, failingRepo{err: errors.New(secret)}, store.NewFileStore(t.TempDir()), authn, nil)
 	e := &testEnv{srv: srv, h: srv.SetupRoutes()}
 	if rec := e.do("GET", "/api/sessions", alice, nil, ""); strings.Contains(rec.Body.String(), "db.internal") {
 		t.Errorf("internal error leaked to the client: %s", rec.Body)
