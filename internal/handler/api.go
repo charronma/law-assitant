@@ -52,6 +52,7 @@ func (s *Server) SetupRoutes() http.Handler {
 	// API routes (all require authentication)
 	mux.HandleFunc("POST /api/chat", s.handleChat)
 	mux.HandleFunc("POST /api/upload", s.handleUpload)
+	mux.HandleFunc("POST /api/export/docx", s.handleExportDocx)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
@@ -88,6 +89,8 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", s.cfg.FrontendURL)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		// Without this a cross-origin page (Vercel -> API) cannot read these headers.
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, X-Session-ID, Retry-After")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		if r.Method == "OPTIONS" {

@@ -134,6 +134,9 @@ func TestCORSPreflightPrecedesAuth(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("preflight got %d, want 200", rec.Code)
 	}
+	if !strings.Contains(rec.Header().Get("Access-Control-Expose-Headers"), "Content-Disposition") {
+		t.Errorf("Content-Disposition must be exposed or cross-origin downloads lose their filename, got %q", rec.Header().Get("Access-Control-Expose-Headers"))
+	}
 	if !strings.Contains(rec.Header().Get("Access-Control-Allow-Headers"), "Authorization") {
 		t.Errorf("preflight must allow the Authorization header, got %q", rec.Header().Get("Access-Control-Allow-Headers"))
 	}

@@ -75,6 +75,30 @@ export async function uploadFile(file: File, sessionId?: string): Promise<Upload
   return res.json();
 }
 
+/** Render Markdown as a Word document; returns the file and the server-suggested name. */
+export async function exportDocx(content: string, title?: string): Promise<{ blob: Blob; filename: string }> {
+  const res = await apiFetch('/export/docx', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, title }),
+  });
+  if (!res.ok) {
+    const body: unknown = await res.json().catch(() => null);
+    throw new Error(toChatError(body, `导出失败（HTTP ${res.status}）`).message);
+  }
+  const cd = res.headers.get('Content-Disposition') ?? '';
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  let filename = '法律文书.docx';
+  if (m) {
+    try {
+      filename = decodeURIComponent(m[1]);
+    } catch {
+      /* keep the default */
+    }
+  }
+  return { blob: await res.blob(), filename };
+}
+
 // List the selectable models and the server's default
 export async function getModels(): Promise<ModelList> {
   const res = await apiFetch('/models');

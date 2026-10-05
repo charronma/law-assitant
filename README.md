@@ -183,6 +183,7 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 |------|------|------|
 | GET | /api/models | 可选模型列表与默认模型：`{"models":[{"id","label","tier"}],"default":"..."}` |
 | POST | /api/chat | 发送消息（SSE 流式响应）。可选字段 `model`，缺省使用默认模型，不在白名单内返回 400 `INVALID_MODEL` |
+| POST | /api/export/docx | 把一条回复（Markdown）导出为 Word：`{title?, content}` → `.docx`（标题/列表/表格/加粗/引用，末尾附免责声明） |
 | POST | /api/upload | 上传文件（.docx/.pdf/.txt/.md）。成功返回 `chars`/`preview`/`truncated`；无法提取文字时返回 422 `{code,message}`（`NO_TEXT`/`UNSUPPORTED_FORMAT`/`EXTRACT_FAILED`/`FILE_TOO_LARGE`） |
 | POST | /api/sessions | 创建会话 |
 | GET | /api/sessions | 获取会话列表 |

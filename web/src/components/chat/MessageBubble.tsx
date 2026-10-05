@@ -1,7 +1,8 @@
 import ReactMarkdown from 'react-markdown';
-import { Bot, User, Copy, Check } from 'lucide-react';
+import { Bot, User, Copy, Check, FileDown, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import type { Message } from '../../types';
+import { exportDocx } from '../../services/api';
 
 interface MessageBubbleProps {
   message: Message;
@@ -9,7 +10,30 @@ interface MessageBubbleProps {
 
 export default function MessageBubble({ message }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const isUser = message.role === 'user';
+
+  const handleExport = async () => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const { blob, filename } = await exportDocx(message.content);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoking right away can cancel the download in some browsers (Safari).
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : '导出失败');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(message.content);
@@ -63,6 +87,19 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
               {copied ? <Check size={12} /> : <Copy size={12} />}
               {copied ? '已复制' : '复制'}
             </button>
+            <button
+              onClick={handleExport}
+              disabled={exporting}
+              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors disabled:opacity-60"
+            >
+              {exporting ? <Loader2 size={12} className="animate-spin" /> : <FileDown size={12} />}
+              导出 Word
+            </button>
+            {exportError && (
+              <span role="alert" className="self-center text-xs text-red-600">
+                {exportError}
+              </span>
+            )}
           </div>
         )}
       </div>
