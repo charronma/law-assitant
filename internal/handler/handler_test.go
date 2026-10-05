@@ -29,6 +29,7 @@ type testEnv struct {
 	h     http.Handler
 	files *store.FileStore
 	llm   *fakeLLM
+	dir   string // upload directory
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -38,14 +39,15 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{FrontendURL: "http://localhost:5173", MaxUploadSize: 1 << 20}
-	files := store.NewFileStore(t.TempDir())
+	dir := t.TempDir()
+	files := store.NewFileStore(dir)
 	llm := newFakeLLM()
 	registry, err := model.NewRegistryWithFactory(model.DefaultIDs(), model.DefaultModelID, llm.factory)
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(cfg, agent.NewAgentManager(registry), store.NewSessionStore(), files, authn, registry)
-	return &testEnv{srv: srv, h: srv.SetupRoutes(), files: files, llm: llm}
+	return &testEnv{srv: srv, h: srv.SetupRoutes(), files: files, llm: llm, dir: dir}
 }
 
 func token(t *testing.T, user string) string {
@@ -207,10 +209,10 @@ func TestUploadedFilesAreOwnedByUploader(t *testing.T) {
 		t.Fatalf("bad upload response: %v %s", err, rec.Body)
 	}
 
-	if got := e.srv.getFileContents("alice", []string{up.FileID}); !strings.Contains(got, "保密条款") {
+	if got := strings.Join(e.srv.getFileContents("alice", []string{up.FileID}), ""); !strings.Contains(got, "保密条款") {
 		t.Errorf("owner should read own file, got %q", got)
 	}
-	if got := e.srv.getFileContents("bob", []string{up.FileID}); strings.Contains(got, "保密条款") {
+	if got := strings.Join(e.srv.getFileContents("bob", []string{up.FileID}), ""); strings.Contains(got, "保密条款") {
 		t.Errorf("another user read alice's file: %q", got)
 	}
 }

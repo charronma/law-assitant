@@ -6,7 +6,7 @@
 
 - **法律咨询** - 多轮对话式法律问答，覆盖民事/刑事/行政/劳动法等领域
 - **诉状撰写** - 自动生成起诉状/答辩状/上诉状等规范法律文书
-- **合同优化** - 上传 Word/PDF 合同文件，审查风险条款并生成修改建议
+- **合同优化** - 上传 Word(.docx)/PDF/TXT/MD 合同文件，审查风险条款并生成修改建议。上传时即解析文本：扫描件/图片 PDF、旧版 .doc、损坏文件会被明确拒绝并提示原因，不会静默当作空文档发给模型
 - **证据整理** - 对证据材料进行分类、排序，生成规范证据清单
 - **取证指导** - 根据案件类型指导证据收集方向和注意事项
 - **沟通话术** - 生成律师与客户/当事人的沟通策略和话术模板
@@ -183,7 +183,7 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 |------|------|------|
 | GET | /api/models | 可选模型列表与默认模型：`{"models":[{"id","label","tier"}],"default":"..."}` |
 | POST | /api/chat | 发送消息（SSE 流式响应）。可选字段 `model`，缺省使用默认模型，不在白名单内返回 400 `INVALID_MODEL` |
-| POST | /api/upload | 上传文件（Word/PDF） |
+| POST | /api/upload | 上传文件（.docx/.pdf/.txt/.md）。成功返回 `chars`/`preview`/`truncated`；无法提取文字时返回 422 `{code,message}`（`NO_TEXT`/`UNSUPPORTED_FORMAT`/`EXTRACT_FAILED`/`FILE_TOO_LARGE`） |
 | POST | /api/sessions | 创建会话 |
 | GET | /api/sessions | 获取会话列表 |
 | GET | /api/sessions/:id | 获取会话详情 |

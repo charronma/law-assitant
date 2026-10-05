@@ -67,7 +67,11 @@ export async function uploadFile(file: File, sessionId?: string): Promise<Upload
     method: 'POST',
     body: formData,
   });
-  if (!res.ok) throw new Error('Failed to upload file');
+  if (!res.ok) {
+    // The server explains why it rejected the file (unreadable, scanned, .doc, too large...).
+    const body: unknown = await res.json().catch(() => null);
+    throw new Error(toChatError(body, `文件上传失败（HTTP ${res.status}）`).message);
+  }
   return res.json();
 }
 

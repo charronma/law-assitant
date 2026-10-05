@@ -106,3 +106,19 @@ func (fs *FileStore) SetExtractedText(userID, id, text string) error {
 	file.ExtractedText = text
 	return nil
 }
+
+// Delete removes the user's file from the index and from disk.
+func (fs *FileStore) Delete(userID, id string) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	file, ok := fs.files[id]
+	if !ok || file.UserID != userID {
+		return fmt.Errorf("%w: %s", ErrFileNotFound, id)
+	}
+	delete(fs.files, id)
+	if err := os.Remove(file.StoragePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}

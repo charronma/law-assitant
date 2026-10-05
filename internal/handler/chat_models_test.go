@@ -310,9 +310,10 @@ func TestEveryModuleHonoursTheSelectedModel(t *testing.T) {
 		}
 	}
 
-	// The contract module has a second code path when files are attached.
+	// Attached documents must not change which model serves the request.
 	sid := e.createSessionFor(t, alice, "contract")
-	rec := e.chat(t, alice, map[string]any{"session_id": sid, "message": "审查", "model": "glm-5.3", "file_ids": []string{"no-such-file"}})
+	up := e.upload(t, alice, "c.txt", []byte("保密条款"))
+	rec := e.chat(t, alice, map[string]any{"session_id": sid, "message": "审查", "model": "glm-5.3", "file_ids": []string{up.FileID}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("contract with files: got %d: %s", rec.Code, rec.Body)
 	}

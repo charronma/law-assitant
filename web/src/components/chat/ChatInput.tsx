@@ -15,8 +15,9 @@ const FILE_MODULES: ModuleType[] = ['contract', 'evidence_org'];
 
 export default function ChatInput({ onSend, onStop, isStreaming, module, sessionId }: ChatInputProps) {
   const [input, setInput] = useState('');
-  const [uploadedFiles, setUploadedFiles] = useState<{ id: string; name: string }[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<{ id: string; name: string; chars: number; truncated: boolean }[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -43,11 +44,15 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
     if (!file) return;
 
     setIsUploading(true);
+    setUploadError(null);
     try {
       const result = await uploadFile(file, sessionId || undefined);
-      setUploadedFiles(prev => [...prev, { id: result.file_id, name: result.filename }]);
-    } catch {
-      alert('文件上传失败，请重试');
+      setUploadedFiles(prev => [
+        ...prev,
+        { id: result.file_id, name: result.filename, chars: result.chars, truncated: result.truncated },
+      ]);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : '文件上传失败，请重试');
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -68,12 +73,32 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
 
   return (
     <div className="border-t border-gray-200 bg-white p-4">
+      {uploadError && (
+        <div
+          role="alert"
+          data-testid="upload-error"
+          className="flex items-start justify-between gap-2 mb-2 px-3 py-2 bg-red-50 border border-red-200 text-red-700 text-xs rounded-md"
+        >
+          <span>{uploadError}</span>
+          <button onClick={() => setUploadError(null)} aria-label="关闭" className="shrink-0 hover:text-red-900">
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
       {/* Uploaded files */}
       {uploadedFiles.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
           {uploadedFiles.map(f => (
-            <span key={f.id} className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded-md">
+            <span
+              key={f.id}
+              data-testid="file-chip"
+              className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded-md"
+            >
               📎 {f.name}
+              <span className={f.truncated ? 'text-amber-600' : 'text-blue-500'}>
+                · 已提取 {f.chars.toLocaleString()} 字{f.truncated ? '（内容过长，已截断）' : ''}
+              </span>
               <button onClick={() => removeFile(f.id)} className="hover:text-red-500">
                 <X size={12} />
               </button>
