@@ -1,0 +1,11 @@
+.git
+.github
+web
+docs
+uploads
+bin
+*.md
+.env
+.env.*
+Dockerfile
+.dockerignore

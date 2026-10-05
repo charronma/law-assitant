@@ -21,6 +21,14 @@ type Config struct {
 
 	// Frontend
 	FrontendURL string
+
+	// Authentication (Supabase)
+	SupabaseURL       string // https://<project>.supabase.co
+	SupabaseJWTSecret string // legacy HS256 secret; optional when the project uses JWKS
+	// Publishable (or legacy anon) key. With SUPABASE_URL it switches
+	// conversations from memory to Supabase Postgres. Public by design.
+	SupabasePublishableKey string
+	AuthDisabled           bool // local development only
 }
 
 // Load reads configuration from environment variables
@@ -36,13 +44,19 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		ServerPort:    getEnvOrDefault("SERVER_PORT", "8080"),
+		// SERVER_PORT wins; many platforms (Render, Railway, Fly, Cloud Run) inject PORT.
+		ServerPort:    getEnvOrDefault("SERVER_PORT", getEnvOrDefault("PORT", "8080")),
 		QwenAPIKey:    apiKey,
 		QwenBaseURL:   getEnvOrDefault("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
 		QwenModel:     getEnvOrDefault("QWEN_MODEL", "qwen-max"),
 		UploadDir:     getEnvOrDefault("UPLOAD_DIR", "./uploads"),
 		MaxUploadSize: 20 * 1024 * 1024, // 20MB
 		FrontendURL:   getEnvOrDefault("FRONTEND_URL", "http://localhost:5173"),
+
+		SupabaseURL:            os.Getenv("SUPABASE_URL"),
+		SupabaseJWTSecret:      os.Getenv("SUPABASE_JWT_SECRET"),
+		SupabasePublishableKey: getEnvOrDefault("SUPABASE_PUBLISHABLE_KEY", os.Getenv("SUPABASE_ANON_KEY")),
+		AuthDisabled:           os.Getenv("AUTH_DISABLED") == "true",
 	}
 
 	// Ensure upload directory exists

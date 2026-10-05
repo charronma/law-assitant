@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -22,9 +25,12 @@ type ChatRequest struct {
 	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
+// streamWriteTimeout bounds a single streaming chat response.
+const streamWriteTimeout = 10 * time.Minute
+
 // SSEEvent represents a server-sent event
 type SSEEvent struct {
-	Type      string `json:"type"`               // "token", "done", "error"
+	Type      string `json:"type"` // "token", "done", "error"
 	Content   string `json:"content,omitempty"`
 	MessageID string `json:"message_id,omitempty"`
 	Error     string `json:"error,omitempty"`
@@ -32,6 +38,11 @@ type SSEEvent struct {
 
 // handleChat processes chat requests with SSE streaming response
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid request body")
@@ -49,21 +60,29 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if req.Module == "" {
 			module = store.ModuleConsult
 		}
-		session := s.sessionStore.Create(module, "")
-		req.SessionID = session.ID
+		if !module.Valid() {
+			writeError(w, http.StatusBadRequest, "Unknown module")
+			return
+		}
+		created, err := s.sessionStore.Create(r.Context(), userID, module, "")
+		if err != nil {
+			writeStoreError(w, err, "create session")
+			return
+		}
+		req.SessionID = created.ID
 	}
 
 	// Save user message
-	_, err := s.sessionStore.AddMessage(req.SessionID, "user", req.Message, req.FileIDs)
+	_, err := s.sessionStore.AddMessage(r.Context(), userID, req.SessionID, "user", req.Message, req.FileIDs)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "Session not found")
+		writeStoreError(w, err, "save user message")
 		return
 	}
 
-	// Get session to determine module
-	session, err := s.sessionStore.Get(req.SessionID)
+	// Get session (with history) to determine module
+	session, err := s.sessionStore.Get(r.Context(), userID, req.SessionID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "Session not found")
+		writeStoreError(w, err, "load session")
 		return
 	}
 
@@ -76,7 +95,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if moduleType == agent.ModuleContract && len(req.FileIDs) > 0 {
 		// Get document content
-		docContent := s.getFileContents(req.FileIDs)
+		docContent := s.getFileContents(userID, req.FileIDs)
 		contractAgent := s.agentManager.GetContractAgent()
 		streamReader, err = contractAgent.HandleWithDocument(r.Context(), messages, docContent)
 	} else {
@@ -99,7 +118,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("X-Session-ID", req.SessionID)
+
+	// Long generations (e.g. contract review) can outlive the server-wide
+	// WriteTimeout; extend the deadline for this streaming response only.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(streamWriteTimeout)); err != nil {
+		log.Printf("Failed to extend write deadline: %v", err)
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -108,7 +134,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stream tokens to client
-	var fullContent string
+	var fullContent strings.Builder
 	defer streamReader.Close()
 
 	for {
@@ -125,22 +151,28 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 		content := msg.Content
 		if content != "" {
-			fullContent += content
+			fullContent.WriteString(content)
 			sendSSEEvent(w, flusher, SSEEvent{Type: "token", Content: content})
 		}
 	}
 
-	// Save assistant message
-	assistantMsg, err := s.sessionStore.AddMessage(req.SessionID, "assistant", fullContent, nil)
-	if err != nil {
-		log.Printf("Failed to save assistant message: %v", err)
+	// Save assistant message (skip empty replies so a failed stream does not
+	// leave blank assistant turns in the history sent to the model)
+	msgID := ""
+	if fullContent.Len() > 0 {
+		// Detach from the request's cancellation: a client that disconnected
+		// mid-stream should not lose the reply that was already generated.
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+		defer cancel()
+		assistantMsg, err := s.sessionStore.AddMessage(saveCtx, userID, req.SessionID, "assistant", fullContent.String(), nil)
+		if err != nil {
+			log.Printf("Failed to save assistant message: %v", err)
+		} else {
+			msgID = assistantMsg.ID
+		}
 	}
 
 	// Send done event
-	msgID := ""
-	if assistantMsg != nil {
-		msgID = assistantMsg.ID
-	}
 	sendSSEEvent(w, flusher, SSEEvent{Type: "done", MessageID: msgID})
 }
 
@@ -173,11 +205,12 @@ func sendSSEEvent(w http.ResponseWriter, flusher http.Flusher, event SSEEvent) {
 	flusher.Flush()
 }
 
-// getFileContents retrieves and parses content from uploaded files
-func (s *Server) getFileContents(fileIDs []string) string {
+// getFileContents retrieves and parses content from the user's uploaded files.
+// IDs that do not exist or belong to someone else are silently skipped.
+func (s *Server) getFileContents(userID string, fileIDs []string) string {
 	var contents []string
 	for _, fileID := range fileIDs {
-		file, err := s.fileStore.Get(fileID)
+		file, err := s.fileStore.Get(userID, fileID)
 		if err != nil {
 			continue
 		}
@@ -196,20 +229,9 @@ func (s *Server) getFileContents(fileIDs []string) string {
 		}
 
 		// Cache the extracted text
-		s.fileStore.SetExtractedText(fileID, text)
+		s.fileStore.SetExtractedText(userID, fileID, text)
 		contents = append(contents, text)
 	}
 
-	return fmt.Sprintf("文件内容如下：\n\n%s", joinWithSeparator(contents))
-}
-
-func joinWithSeparator(parts []string) string {
-	result := ""
-	for i, part := range parts {
-		if i > 0 {
-			result += "\n\n---\n\n"
-		}
-		result += part
-	}
-	return result
+	return fmt.Sprintf("文件内容如下：\n\n%s", strings.Join(contents, "\n\n---\n\n"))
 }

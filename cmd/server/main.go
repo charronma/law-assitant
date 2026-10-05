@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"law-assistant/internal/agent"
+	"law-assistant/internal/auth"
 	"law-assistant/internal/config"
 	"law-assistant/internal/handler"
 	"law-assistant/internal/model"
@@ -36,8 +37,18 @@ func main() {
 	}
 	log.Printf("Qwen ChatModel initialized successfully")
 
+	// Initialize authentication (fails closed when unconfigured)
+	authn, err := auth.New(ctx, auth.Config{
+		SupabaseURL: cfg.SupabaseURL,
+		JWTSecret:   cfg.SupabaseJWTSecret,
+		Disabled:    cfg.AuthDisabled,
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize authentication: %v", err)
+	}
+
 	// Initialize stores
-	sessionStore := store.NewSessionStore()
+	sessionStore := newSessionRepository(cfg)
 	fileStore := store.NewFileStore(cfg.UploadDir)
 
 	// Initialize agent manager
@@ -45,7 +56,7 @@ func main() {
 	log.Printf("Agent manager initialized with %d modules", 6)
 
 	// Initialize HTTP server
-	srv := handler.NewServer(cfg, agentMgr, sessionStore, fileStore)
+	srv := handler.NewServer(cfg, agentMgr, sessionStore, fileStore, authn)
 	routes := srv.SetupRoutes()
 
 	httpServer := &http.Server{
@@ -79,4 +90,15 @@ func main() {
 	}
 
 	log.Println("Server stopped")
+}
+
+// newSessionRepository persists conversations in Supabase when it is fully
+// configured, and otherwise keeps them in memory (lost on restart).
+func newSessionRepository(cfg *config.Config) store.SessionRepository {
+	if cfg.SupabaseURL != "" && cfg.SupabasePublishableKey != "" && !cfg.AuthDisabled {
+		log.Printf("Conversations are persisted in Supabase Postgres")
+		return store.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabasePublishableKey, auth.Token)
+	}
+	log.Printf("WARNING: conversations are kept in memory and lost on restart (set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY to persist them)")
+	return store.NewSessionStore()
 }

@@ -2,10 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
 	"law-assistant/internal/agent"
+	"law-assistant/internal/auth"
 	"law-assistant/internal/config"
 	"law-assistant/internal/store"
 	"law-assistant/internal/tool"
@@ -15,19 +17,21 @@ import (
 type Server struct {
 	cfg          *config.Config
 	agentManager *agent.AgentManager
-	sessionStore *store.SessionStore
+	sessionStore store.SessionRepository
 	fileStore    *store.FileStore
 	docParser    *tool.DocumentParser
+	auth         *auth.Authenticator
 }
 
 // NewServer creates a new server with all dependencies
-func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore *store.SessionStore, fileStore *store.FileStore) *Server {
+func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore store.SessionRepository, fileStore *store.FileStore, authn *auth.Authenticator) *Server {
 	return &Server{
 		cfg:          cfg,
 		agentManager: agentMgr,
 		sessionStore: sessionStore,
 		fileStore:    fileStore,
 		docParser:    tool.NewDocumentParser(),
+		auth:         authn,
 	}
 }
 
@@ -35,7 +39,7 @@ func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore *s
 func (s *Server) SetupRoutes() http.Handler {
 	mux := http.NewServeMux()
 
-	// API routes
+	// API routes (all require authentication)
 	mux.HandleFunc("POST /api/chat", s.handleChat)
 	mux.HandleFunc("POST /api/upload", s.handleUpload)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
@@ -44,8 +48,27 @@ func (s *Server) SetupRoutes() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("GET /api/modules", s.handleListModules)
 
-	// Apply CORS middleware
-	return s.corsMiddleware(mux)
+	root := http.NewServeMux()
+	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	root.Handle("/api/", s.auth.Middleware(mux))
+
+	// CORS wraps everything so that preflight requests (which carry no
+	// credentials) are answered before authentication.
+	return s.corsMiddleware(root)
+}
+
+// requireUser returns the authenticated user's ID, or writes a 401 and
+// returns false. The auth middleware already guarantees an ID on /api routes;
+// this is a second line of defence for any handler wired up without it.
+func requireUser(w http.ResponseWriter, r *http.Request) (string, bool) {
+	userID, ok := auth.UserID(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		return "", false
+	}
+	return userID, true
 }
 
 // corsMiddleware handles CORS headers
@@ -63,6 +86,22 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// writeStoreError maps a persistence error to an HTTP response. Unexpected
+// errors are logged with detail but never echoed to the client.
+func writeStoreError(w http.ResponseWriter, err error, action string) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "Session not found")
+	case errors.Is(err, store.ErrUnauthorized):
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
+	case errors.Is(err, store.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, "Invalid request")
+	default:
+		log.Printf("%s: %v", action, err)
+		writeError(w, http.StatusInternalServerError, "Internal server error")
+	}
 }
 
 // writeJSON writes a JSON response

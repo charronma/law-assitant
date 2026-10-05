@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 // UploadedFile represents an uploaded file
 type UploadedFile struct {
 	ID            string    `json:"id"`
+	UserID        string    `json:"-"`
 	SessionID     string    `json:"session_id"`
 	Filename      string    `json:"filename"`
 	ContentType   string    `json:"content_type"`
@@ -25,8 +27,8 @@ type UploadedFile struct {
 
 // FileStore manages uploaded files
 type FileStore struct {
-	mu       sync.RWMutex
-	files    map[string]*UploadedFile
+	mu        sync.RWMutex
+	files     map[string]*UploadedFile
 	uploadDir string
 }
 
@@ -39,7 +41,7 @@ func NewFileStore(uploadDir string) *FileStore {
 }
 
 // Save saves an uploaded file to disk and records metadata
-func (fs *FileStore) Save(sessionID, filename, contentType string, size int64, reader io.Reader) (*UploadedFile, error) {
+func (fs *FileStore) Save(userID, sessionID, filename, contentType string, size int64, reader io.Reader) (*UploadedFile, error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
@@ -62,6 +64,7 @@ func (fs *FileStore) Save(sessionID, filename, contentType string, size int64, r
 
 	file := &UploadedFile{
 		ID:          fileID,
+		UserID:      userID,
 		SessionID:   sessionID,
 		Filename:    filename,
 		ContentType: contentType,
@@ -74,26 +77,31 @@ func (fs *FileStore) Save(sessionID, filename, contentType string, size int64, r
 	return file, nil
 }
 
-// Get returns a file by ID
-func (fs *FileStore) Get(id string) (*UploadedFile, error) {
+// ErrFileNotFound is returned when a file does not exist or belongs to
+// another user; callers cannot (and must not) tell the two apart.
+var ErrFileNotFound = errors.New("file not found")
+
+// Get returns a snapshot of the user's file with the given ID
+func (fs *FileStore) Get(userID, id string) (*UploadedFile, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
 	file, ok := fs.files[id]
-	if !ok {
-		return nil, fmt.Errorf("file not found: %s", id)
+	if !ok || file.UserID != userID {
+		return nil, fmt.Errorf("%w: %s", ErrFileNotFound, id)
 	}
-	return file, nil
+	snapshot := *file
+	return &snapshot, nil
 }
 
 // SetExtractedText updates the extracted text for a file
-func (fs *FileStore) SetExtractedText(id, text string) error {
+func (fs *FileStore) SetExtractedText(userID, id, text string) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
 	file, ok := fs.files[id]
-	if !ok {
-		return fmt.Errorf("file not found: %s", id)
+	if !ok || file.UserID != userID {
+		return fmt.Errorf("%w: %s", ErrFileNotFound, id)
 	}
 	file.ExtractedText = text
 	return nil

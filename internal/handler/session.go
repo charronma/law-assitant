@@ -16,6 +16,11 @@ type CreateSessionRequest struct {
 
 // handleCreateSession creates a new chat session
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+
 	var req CreateSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid request body")
@@ -26,14 +31,30 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.Module == "" {
 		module = store.ModuleConsult
 	}
+	if !module.Valid() {
+		writeError(w, http.StatusBadRequest, "Unknown module")
+		return
+	}
 
-	session := s.sessionStore.Create(module, req.Title)
+	session, err := s.sessionStore.Create(r.Context(), userID, module, req.Title)
+	if err != nil {
+		writeStoreError(w, err, "create session")
+		return
+	}
 	writeJSON(w, http.StatusCreated, session)
 }
 
 // handleListSessions returns all chat sessions
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	sessions := s.sessionStore.List()
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	sessions, err := s.sessionStore.List(r.Context(), userID)
+	if err != nil {
+		writeStoreError(w, err, "list sessions")
+		return
+	}
 
 	// Return summary without full messages
 	type SessionSummary struct {
@@ -64,15 +85,19 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 // handleGetSession returns a session with full message history
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "Session ID is required")
 		return
 	}
 
-	session, err := s.sessionStore.Get(id)
+	session, err := s.sessionStore.Get(r.Context(), userID, id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "Session not found")
+		writeStoreError(w, err, "get session")
 		return
 	}
 
@@ -81,14 +106,18 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteSession deletes a chat session
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "Session ID is required")
 		return
 	}
 
-	if err := s.sessionStore.Delete(id); err != nil {
-		writeError(w, http.StatusNotFound, "Session not found")
+	if err := s.sessionStore.Delete(r.Context(), userID, id); err != nil {
+		writeStoreError(w, err, "delete session")
 		return
 	}
 

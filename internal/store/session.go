@@ -1,12 +1,41 @@
 package store
 
 import (
+	"cmp"
+	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrNotFound is returned when a session does not exist or belongs to another
+// user; callers cannot (and must not) tell the two apart.
+var ErrNotFound = errors.New("session not found")
+
+// ErrInvalidInput is returned when the backing store rejects a value (for
+// example an unknown module).
+var ErrInvalidInput = errors.New("invalid input")
+
+// ErrUnauthorized is returned when the backing store rejects the caller's
+// credentials (for example an expired access token).
+var ErrUnauthorized = errors.New("unauthorized")
+
+// SessionRepository is the persistence boundary for chat sessions. Every
+// method is scoped to userID; a session owned by someone else behaves exactly
+// like a missing one (ErrNotFound).
+type SessionRepository interface {
+	Create(ctx context.Context, userID string, module Module, title string) (*Session, error)
+	// Get returns the session together with its full message history.
+	Get(ctx context.Context, userID, id string) (*Session, error)
+	// List returns session summaries (no messages), newest first.
+	List(ctx context.Context, userID string) ([]*Session, error)
+	Delete(ctx context.Context, userID, id string) error
+	AddMessage(ctx context.Context, userID, sessionID, role, content string, fileIDs []string) (*Message, error)
+}
 
 // Module represents the functional module type
 type Module string
@@ -19,6 +48,15 @@ const (
 	ModuleEvidence      Module = "evidence"
 	ModuleCommunication Module = "communication"
 )
+
+// Valid reports whether m is one of the known modules.
+func (m Module) Valid() bool {
+	switch m {
+	case ModuleConsult, ModulePleading, ModuleContract, ModuleEvidenceOrg, ModuleEvidence, ModuleCommunication:
+		return true
+	}
+	return false
+}
 
 // Message represents a single chat message
 type Message struct {
@@ -33,6 +71,7 @@ type Message struct {
 // Session represents a chat session
 type Session struct {
 	ID           string    `json:"id"`
+	UserID       string    `json:"-"`
 	Module       Module    `json:"module"`
 	Title        string    `json:"title"`
 	Messages     []Message `json:"messages"`
@@ -41,7 +80,8 @@ type Session struct {
 	MessageCount int       `json:"message_count"`
 }
 
-// SessionStore manages chat sessions in memory
+// SessionStore is an in-memory SessionRepository. Sessions are lost on restart;
+// it is used for local development and tests.
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -54,8 +94,8 @@ func NewSessionStore() *SessionStore {
 	}
 }
 
-// Create creates a new session
-func (s *SessionStore) Create(module Module, title string) *Session {
+// Create creates a new session owned by userID
+func (s *SessionStore) Create(_ context.Context, userID string, module Module, title string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -65,6 +105,7 @@ func (s *SessionStore) Create(module Module, title string) *Session {
 
 	session := &Session{
 		ID:        uuid.New().String(),
+		UserID:    userID,
 		Module:    module,
 		Title:     title,
 		Messages:  make([]Message, 0),
@@ -73,63 +114,78 @@ func (s *SessionStore) Create(module Module, title string) *Session {
 	}
 
 	s.sessions[session.ID] = session
-	return session
+	snapshot := *session
+	return &snapshot, nil
 }
 
-// Get returns a session by ID
-func (s *SessionStore) Get(id string) (*Session, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
+// owned returns the session if it exists and belongs to userID.
+// The caller must hold s.mu.
+func (s *SessionStore) owned(userID, id string) (*Session, error) {
 	session, ok := s.sessions[id]
-	if !ok {
-		return nil, fmt.Errorf("session not found: %s", id)
+	if !ok || session.UserID != userID {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	return session, nil
 }
 
-// List returns all sessions sorted by update time (newest first)
-func (s *SessionStore) List() []*Session {
+// Get returns a snapshot of the user's session with the given ID. The returned
+// value is a copy and is safe to read without holding the store lock.
+func (s *SessionStore) Get(_ context.Context, userID, id string) (*Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	sessions := make([]*Session, 0, len(s.sessions))
+	session, err := s.owned(userID, id)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := *session
+	snapshot.Messages = slices.Clone(session.Messages)
+	return &snapshot, nil
+}
+
+// List returns snapshots of the user's sessions sorted by update time (newest
+// first). Messages are omitted; use Get to load the full history.
+func (s *SessionStore) List(_ context.Context, userID string) ([]*Session, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	sessions := make([]*Session, 0)
 	for _, session := range s.sessions {
-		sessions = append(sessions, session)
-	}
-
-	// Sort by updated_at descending
-	for i := 0; i < len(sessions); i++ {
-		for j := i + 1; j < len(sessions); j++ {
-			if sessions[j].UpdatedAt.After(sessions[i].UpdatedAt) {
-				sessions[i], sessions[j] = sessions[j], sessions[i]
-			}
+		if session.UserID != userID {
+			continue
 		}
+		snapshot := *session
+		snapshot.Messages = nil
+		sessions = append(sessions, &snapshot)
 	}
 
-	return sessions
+	slices.SortFunc(sessions, func(a, b *Session) int {
+		return cmp.Compare(b.UpdatedAt.UnixNano(), a.UpdatedAt.UnixNano())
+	})
+
+	return sessions, nil
 }
 
 // Delete removes a session
-func (s *SessionStore) Delete(id string) error {
+func (s *SessionStore) Delete(_ context.Context, userID, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.sessions[id]; !ok {
-		return fmt.Errorf("session not found: %s", id)
+	if _, err := s.owned(userID, id); err != nil {
+		return err
 	}
 	delete(s.sessions, id)
 	return nil
 }
 
 // AddMessage adds a message to a session
-func (s *SessionStore) AddMessage(sessionID, role, content string, fileIDs []string) (*Message, error) {
+func (s *SessionStore) AddMessage(_ context.Context, userID, sessionID, role, content string, fileIDs []string) (*Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	session, ok := s.sessions[sessionID]
-	if !ok {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+	session, err := s.owned(userID, sessionID)
+	if err != nil {
+		return nil, err
 	}
 
 	msg := Message{
@@ -157,18 +213,6 @@ func (s *SessionStore) AddMessage(sessionID, role, content string, fileIDs []str
 	return &msg, nil
 }
 
-// GetMessages returns all messages for a session
-func (s *SessionStore) GetMessages(sessionID string) ([]Message, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	session, ok := s.sessions[sessionID]
-	if !ok {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
-	}
-	return session.Messages, nil
-}
-
 func getDefaultTitle(module Module) string {
 	switch module {
 	case ModuleConsult:
@@ -187,3 +231,5 @@ func getDefaultTitle(module Module) string {
 		return "新建会话"
 	}
 }
+
+var _ SessionRepository = (*SessionStore)(nil)

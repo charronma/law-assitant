@@ -37,16 +37,27 @@ if [ -z "$DASHSCOPE_API_KEY" ] && [ -z "$QWEN_API_KEY" ]; then
 fi
 echo -e "${GREEN}✓${NC} API Key 已配置"
 
+# ── 1b. 登录鉴权 ──
+# 后端在未配置鉴权时会拒绝启动。完全没有任何 Supabase 配置时，这个本地启动脚本
+# 默认走"关闭鉴权"的开发模式（前后端一起），并明确提示；已配置则按配置运行。
+if [ -z "$SUPABASE_URL" ] && [ -z "$SUPABASE_JWT_SECRET" ] && [ -z "$AUTH_DISABLED" ] \
+   && [ ! -f web/.env ] && [ ! -f web/.env.local ]; then
+    export AUTH_DISABLED=true VITE_AUTH_DISABLED=true
+    echo -e "${YELLOW}⚠ 未检测到 Supabase 配置：本地开发模式，已关闭登录鉴权（切勿用于生产）${NC}"
+else
+    echo -e "${GREEN}✓${NC} 登录鉴权已启用"
+fi
+
 # ── 2. 检查 Go ──
 if ! command -v go &> /dev/null; then
-    echo -e "${RED}错误: 未找到 Go，请先安装 Go 1.21+${NC}"
+    echo -e "${RED}错误: 未找到 Go，请先安装 Go 1.24+${NC}"
     exit 1
 fi
 echo -e "${GREEN}✓${NC} Go $(go version | awk '{print $3}')"
 
 # ── 3. 检查 Node.js ──
 if ! command -v node &> /dev/null; then
-    echo -e "${RED}错误: 未找到 Node.js，请先安装 Node.js 18+${NC}"
+    echo -e "${RED}错误: 未找到 Node.js，请先安装 Node.js 20.19+ 或 22.12+${NC}"
     exit 1
 fi
 echo -e "${GREEN}✓${NC} Node $(node --version)"
