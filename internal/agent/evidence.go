@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 
-	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
 	"law-assistant/internal/prompt"
@@ -11,26 +10,21 @@ import (
 
 // EvidenceAgent handles evidence collection guidance
 type EvidenceAgent struct {
-	chatModel model.ChatModel
+	models ModelProvider
 }
 
 // NewEvidenceAgent creates a new EvidenceAgent
-func NewEvidenceAgent(chatModel model.ChatModel) *EvidenceAgent {
+func NewEvidenceAgent(models ModelProvider) *EvidenceAgent {
 	return &EvidenceAgent{
-		chatModel: chatModel,
+		models: models,
 	}
 }
 
 // Handle processes evidence guidance requests with streaming response
-func (a *EvidenceAgent) Handle(ctx context.Context, messages []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+func (a *EvidenceAgent) Handle(ctx context.Context, modelID string, messages []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
 	fullMessages := make([]*schema.Message, 0, len(messages)+1)
 	fullMessages = append(fullMessages, schema.SystemMessage(prompt.EvidenceSystemPrompt))
 	fullMessages = append(fullMessages, messages...)
 
-	streamReader, err := a.chatModel.Stream(ctx, fullMessages)
-	if err != nil {
-		return nil, err
-	}
-
-	return streamReader, nil
+	return stream(ctx, a.models, modelID, fullMessages)
 }

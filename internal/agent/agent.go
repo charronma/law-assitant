@@ -3,13 +3,29 @@ package agent
 import (
 	"context"
 
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
 
+// ModelProvider resolves a chat model by id (empty means the default model).
+type ModelProvider interface {
+	Get(ctx context.Context, id string) (model.BaseChatModel, error)
+}
+
+// stream resolves modelID and starts a streaming completion for msgs.
+func stream(ctx context.Context, models ModelProvider, modelID string, msgs []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+	m, err := models.Get(ctx, modelID)
+	if err != nil {
+		return nil, err
+	}
+	return m.Stream(ctx, msgs)
+}
+
 // Agent defines the interface for all legal assistant agents
 type Agent interface {
-	// Handle processes a chat request and returns a streaming response
-	Handle(ctx context.Context, messages []*schema.Message) (*schema.StreamReader[*schema.Message], error)
+	// Handle processes a chat request with the given model and returns a
+	// streaming response
+	Handle(ctx context.Context, modelID string, messages []*schema.Message) (*schema.StreamReader[*schema.Message], error)
 }
 
 // ModuleType represents the type of agent module

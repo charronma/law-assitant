@@ -50,6 +50,7 @@ type messageRow struct {
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
 	FileIDs   []string  `json:"file_ids"`
+	Model     *string   `json:"model"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -94,7 +95,7 @@ func (s *SupabaseStore) Get(ctx context.Context, userID, id string) (*Session, e
 	q := url.Values{}
 	q.Set("id", "eq."+id)
 	q.Set("user_id", "eq."+userID)
-	q.Set("select", "id,module,title,created_at,updated_at,chat_messages(id,role,content,file_ids,created_at)")
+	q.Set("select", "id,module,title,created_at,updated_at,chat_messages(id,role,content,model,file_ids,created_at)")
 	q.Set("chat_messages.order", "created_at.asc,id.asc")
 
 	var rows []struct {
@@ -113,7 +114,7 @@ func (s *SupabaseStore) Get(ctx context.Context, userID, id string) (*Session, e
 	for _, m := range rows[0].Messages {
 		sess.Messages = append(sess.Messages, Message{
 			ID: m.ID, SessionID: id, Role: m.Role, Content: m.Content,
-			FileIDs: nilIfEmpty(m.FileIDs), CreatedAt: m.CreatedAt,
+			FileIDs: nilIfEmpty(m.FileIDs), Model: deref(m.Model), CreatedAt: m.CreatedAt,
 		})
 	}
 	sess.MessageCount = len(sess.Messages)
@@ -177,17 +178,21 @@ func (s *SupabaseStore) Delete(ctx context.Context, userID, id string) error {
 
 // AddMessage appends a message. The database trigger bumps the session's
 // updated_at and, for the first user message, derives its title.
-func (s *SupabaseStore) AddMessage(ctx context.Context, userID, sessionID, role, content string, fileIDs []string) (*Message, error) {
+func (s *SupabaseStore) AddMessage(ctx context.Context, userID, sessionID, role, content, model string, fileIDs []string) (*Message, error) {
 	if !validUUIDs(userID, sessionID) {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, sessionID)
 	}
 	if fileIDs == nil {
 		fileIDs = []string{}
 	}
-	var rows []messageRow
-	err := s.do(ctx, http.MethodPost, "chat_messages", nil, map[string]any{
+	body := map[string]any{
 		"session_id": sessionID, "role": role, "content": content, "file_ids": fileIDs,
-	}, "return=representation", &rows)
+	}
+	if model != "" {
+		body["model"] = model
+	}
+	var rows []messageRow
+	err := s.do(ctx, http.MethodPost, "chat_messages", nil, body, "return=representation", &rows)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +202,7 @@ func (s *SupabaseStore) AddMessage(ctx context.Context, userID, sessionID, role,
 	m := rows[0]
 	return &Message{
 		ID: m.ID, SessionID: sessionID, Role: m.Role, Content: m.Content,
-		FileIDs: nilIfEmpty(m.FileIDs), CreatedAt: m.CreatedAt,
+		FileIDs: nilIfEmpty(m.FileIDs), Model: deref(m.Model), CreatedAt: m.CreatedAt,
 	}, nil
 }
 
@@ -289,6 +294,13 @@ func validUUIDs(ids ...string) bool {
 		}
 	}
 	return true
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func nilIfEmpty(s []string) []string {

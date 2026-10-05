@@ -31,7 +31,8 @@
 5. 新项目使用非对称签名密钥，后端只需要 `SUPABASE_URL`。如果你的项目仍是旧版 HS256 JWT，
    另外把 **JWT Secret** 设为后端的 `SUPABASE_JWT_SECRET`（后端会根据 token 的签名算法自动选择验证方式）。
 
-6. **创建数据表**：执行 `supabase/migrations/20261004000000_chat_persistence.sql`
+6. **创建数据表**：按文件名顺序执行 `supabase/migrations/` 下的全部迁移（目前是 `20261004000000_chat_persistence.sql` 和 `20261005000000_chat_message_model.sql`）。**升级时务必先应用新迁移，再部署新版后端**：新版后端会写入 `chat_messages.model`，列不存在时消息写入会失败。
+   首次建库的做法：执行 `supabase/migrations/20261004000000_chat_persistence.sql`
    （控制台 SQL Editor 粘贴运行，或 `supabase link` 后 `supabase db push`）。它会创建 `chat_sessions` / `chat_messages`，
    开启 RLS 并只授权给已登录用户。之后在控制台 **Advisors → Security** 确认没有告警。
 
@@ -47,6 +48,9 @@
 | `SUPABASE_URL` | 上一步的 Project URL |
 | `SUPABASE_PUBLISHABLE_KEY` | Supabase 的 publishable key（`sb_publishable_...`，公开密钥）。设置后会话才会持久化 |
 | `SUPABASE_JWT_SECRET` | 仅旧版 HS256 项目需要 |
+| `QWEN_MODEL` | 默认模型，缺省 `qwen3.8-max-0902`；必须在 `QWEN_MODELS` 内 |
+| `QWEN_MODELS` | 可选，用户可选的模型白名单（逗号分隔）；缺省为内置的 12 个。自定义时务必包含默认模型 |
+| `QWEN_BASE_URL` | 可选，默认国内站；国际站密钥需设为 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | `FRONTEND_URL` | 前端的**完整来源**，如 `https://your-app.vercel.app`（无结尾 `/`） |
 | `UPLOAD_DIR` | 默认 `/data/uploads`；挂载持久卷到 `/data` 才能保留上传文件 |
 

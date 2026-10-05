@@ -18,7 +18,7 @@
 | 层级 | 技术 |
 |------|------|
 | 后端框架 | Go + [Eino](https://github.com/cloudwego/eino) |
-| 大模型 | 通义千问 (qwen-max) via OpenAI 兼容 API |
+| 大模型 | 通义千问 / DeepSeek / GLM / Kimi 等，经阿里云百炼 DashScope 的 OpenAI 兼容接口，前端可自由选择 |
 | 前端 | React 18 + TypeScript + Tailwind CSS |
 | 通信 | SSE (Server-Sent Events) 流式响应 |
 | 鉴权 | Supabase Auth（后端校验 JWT，前端 `@supabase/supabase-js`） |
@@ -120,6 +120,42 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 - 后端在既没配置 `SUPABASE_URL`/`SUPABASE_JWT_SECRET`、又没设置 `AUTH_DISABLED=true` 时拒绝启动（fail closed）。
 - `AUTH_DISABLED=true` 仅用于本地开发：所有请求都以 `dev-user` 身份运行，启动时会打印警告。**不要在部署环境使用**。
 
+## 模型选择与额度提示
+
+前端顶栏可以按 **旗舰 / 标准 / 快速** 分组选择模型，选择结果记在浏览器 `localStorage`。
+
+内置的 12 个模型（顺序即推荐顺序，`QWEN_MODELS` 默认值）：
+
+| id | 名称 | 档位 |
+|----|------|------|
+| qwen3.8-max-0902（默认） | 通义千问 3.8 Max（0902） | 旗舰 |
+| qwen3.8-max | 通义千问 3.8 Max | 旗舰 |
+| deepseek-v4-pro-0813 | DeepSeek V4 Pro | 旗舰 |
+| qwen3.8-2.4t-a95b | 通义千问 3.8 2.4T MoE | 旗舰 |
+| glm-5.3 | GLM-5.3 | 旗舰 |
+| kimi-k3 | Kimi K3 | 旗舰 |
+| qwen3.8-27b | 通义千问 3.8 27B | 标准 |
+| deepseek-v4.1-flash | DeepSeek V4.1 Flash | 快速 |
+| qwen3.8-flash | 通义千问 3.8 Flash | 快速 |
+| qwen3.7-flash | 通义千问 3.7 Flash | 快速 |
+| qwen3.7-flash-2026-07-15 | 通义千问 3.7 Flash（0715） | 快速 |
+| deepseek-v4-flash-0731 | DeepSeek V4 Flash（0731） | 快速 |
+
+名称和档位来自代码里的内置映射表；白名单里出现表外的 id 也能用（名称显示为 id 本身，档位为"标准"），所以以后加模型只需改环境变量 `QWEN_MODELS`。所有模型共用同一个 `QWEN_BASE_URL` 和 API Key。
+
+> ⚠️ 升级注意：默认模型从 `qwen-max` 改成了 `qwen3.8-max-0902`。如果你设置了自定义的 `QWEN_MODELS` 却没有包含默认模型，需要同时设置 `QWEN_MODEL`，否则后端启动时会报错退出。
+
+**上游错误分类**：后端把模型服务的失败转成结构化错误 `{"code","model","message"}`，**不会**把上游原始响应或密钥返回给前端（原始错误只写服务端日志）：
+
+| 上游情况 | HTTP | code | 前端表现 |
+|----------|------|------|----------|
+| 403 且表示免费额度用尽（`AllocationQuota.FreeTierOnly` / `Free quota exhausted` / `quota`） | 402 | `QUOTA_EXHAUSTED` | 醒目横幅 + "切换模型" / "换个模型重试"，该模型在下拉框里标记"额度已用完" |
+| 401 / `Incorrect API key` | 502 | `INVALID_API_KEY` | 提示联系管理员，不提供重试 |
+| 429 | 429 | `RATE_LIMITED` | 提示稍后再试，提供"重试" |
+| 其他 | 500 | `UPSTREAM_ERROR` | 显示提示，提供"重试" |
+
+输出开始之后才出错时，用 SSE 的 `event: error` 携带同样的 JSON。被拒绝的请求（额度、限流等）**不会**写入会话历史，所以"换个模型重试"不会产生重复的用户消息。
+
 ## 会话持久化（Supabase Postgres）
 
 同时设置 `SUPABASE_URL` 和 `SUPABASE_PUBLISHABLE_KEY` 后，会话与消息存入 Supabase 的
@@ -135,6 +171,7 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
   （`apikey` 头放公开的 publishable key，`Authorization: Bearer` 放用户 token），因此数据库以 `authenticated` 角色执行语句，
   由 **Row Level Security** 强制"只能访问自己的行"。后端查询另外显式带上 `user_id` 过滤，隔离不只依赖 RLS 一层。
 - 消息只能写入属于自己的会话；`anon`（未登录）角色没有任何权限；`user_id` 不可被修改。
+- 每条消息记录本轮使用的模型 id（`chat_messages.model`，迁移 `20261005000000_chat_message_model.sql`）。
 - 触发器会在新增消息时更新会话的 `updated_at`，并用首条用户消息的前 20 个字符生成标题。
 - 上传的文件目前仍在本地磁盘（`UPLOAD_DIR`），不在数据库里。
 
@@ -144,7 +181,8 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /api/chat | 发送消息（SSE 流式响应） |
+| GET | /api/models | 可选模型列表与默认模型：`{"models":[{"id","label","tier"}],"default":"..."}` |
+| POST | /api/chat | 发送消息（SSE 流式响应）。可选字段 `model`，缺省使用默认模型，不在白名单内返回 400 `INVALID_MODEL` |
 | POST | /api/upload | 上传文件（Word/PDF） |
 | POST | /api/sessions | 创建会话 |
 | GET | /api/sessions | 获取会话列表 |
@@ -158,7 +196,8 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 |------|------|--------|------|
 | DASHSCOPE_API_KEY | 是 | - | 百炼平台 API Key（优先读取） |
 | QWEN_API_KEY | 否 | - | 备选环境变量名（DASHSCOPE_API_KEY 未设置时读取） |
-| QWEN_MODEL | 否 | qwen-max | 模型名称（可选 qwen-plus、qwen-turbo） |
+| QWEN_MODEL | 否 | qwen3.8-max-0902 | 默认模型。必须在 `QWEN_MODELS` 白名单内，否则后端拒绝启动 |
+| QWEN_MODELS | 否 | 内置 12 个模型（见下） | 允许用户选择的模型白名单，逗号分隔，顺序即前端显示顺序 |
 | QWEN_BASE_URL | 否 | https://dashscope.aliyuncs.com/compatible-mode/v1 | API 地址 |
 | SERVER_PORT | 否 | 8080 | 服务端口 |
 | UPLOAD_DIR | 否 | ./uploads | 文件上传目录 |

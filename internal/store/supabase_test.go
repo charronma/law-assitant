@@ -150,7 +150,7 @@ func TestSupabase_MalformedIDsNeverReachTheNetwork(t *testing.T) {
 		if err := st.Delete(bg, userA, bad); !errors.Is(err, ErrNotFound) {
 			t.Errorf("Delete(%q) = %v, want ErrNotFound", bad, err)
 		}
-		if _, err := st.AddMessage(bg, userA, bad, "user", "x", nil); !errors.Is(err, ErrNotFound) {
+		if _, err := st.AddMessage(bg, userA, bad, "user", "x", "", nil); !errors.Is(err, ErrNotFound) {
 			t.Errorf("AddMessage(%q) = %v, want ErrNotFound", bad, err)
 		}
 	}
@@ -196,7 +196,7 @@ func TestSupabase_Delete(t *testing.T) {
 
 func TestSupabase_AddMessage(t *testing.T) {
 	st, got, _ := fakeREST(t, 201, `[{"id":"m1","role":"user","content":"你好","file_ids":[],"created_at":"2026-10-04T08:00:01+00:00"}]`)
-	m, err := st.AddMessage(bg, userA, sessA, "user", "你好", nil)
+	m, err := st.AddMessage(bg, userA, sessA, "user", "你好", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestSupabase_ErrorMapping(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			st, _, _ := fakeREST(t, tt.status, tt.body)
-			_, err := st.AddMessage(bg, userA, sessA, "user", "x", nil)
+			_, err := st.AddMessage(bg, userA, sessA, "user", "x", "", nil)
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("got %v, want %v", err, tt.want)
 			}
@@ -243,11 +243,61 @@ func TestSupabase_ErrorMapping(t *testing.T) {
 
 	// Anything else is an opaque server error that is not mistaken for a sentinel.
 	st, _, _ := fakeREST(t, 500, `{"code":"XX000","message":"boom"}`)
-	_, err := st.AddMessage(bg, userA, sessA, "user", "x", nil)
+	_, err := st.AddMessage(bg, userA, sessA, "user", "x", "", nil)
 	if err == nil || errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("got %v, want a generic error", err)
 	}
 	if !strings.Contains(err.Error(), "boom") {
 		t.Errorf("detail should be kept for the server log: %v", err)
+	}
+}
+
+func TestSupabase_AddMessageSendsModelOnlyWhenSet(t *testing.T) {
+	reply := `[{"id":"m1","role":"user","content":"x","model":"qwen3.8-max","file_ids":[],"created_at":"2026-10-04T08:00:01+00:00"}]`
+
+	st, got, _ := fakeREST(t, 201, reply)
+	m, err := st.AddMessage(bg, userA, sessA, "user", "x", "qwen3.8-max", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal([]byte(got.body), &body)
+	if body["model"] != "qwen3.8-max" {
+		t.Errorf("body = %v, want model to be sent", body)
+	}
+	if m.Model != "qwen3.8-max" {
+		t.Errorf("Model = %q", m.Model)
+	}
+
+	// No model: the column is left NULL rather than sent as "".
+	st2, got2, _ := fakeREST(t, 201, `[{"id":"m2","role":"user","content":"x","model":null,"file_ids":[],"created_at":"2026-10-04T08:00:01+00:00"}]`)
+	m2, err := st2.AddMessage(bg, userA, sessA, "user", "x", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body2 map[string]any
+	_ = json.Unmarshal([]byte(got2.body), &body2)
+	if _, sent := body2["model"]; sent {
+		t.Errorf("empty model must not be sent: %v", body2)
+	}
+	if m2.Model != "" {
+		t.Errorf("a NULL model should read back as empty, got %q", m2.Model)
+	}
+}
+
+func TestSupabase_GetReadsModelColumn(t *testing.T) {
+	st, got, _ := fakeREST(t, 200, `[{"id":"`+sessA+`","module":"consult","title":"t","created_at":"2026-10-04T08:00:00+00:00","updated_at":"2026-10-04T08:00:00+00:00",
+	  "chat_messages":[
+	    {"id":"m1","role":"user","content":"hi","model":"kimi-k3","file_ids":[],"created_at":"2026-10-04T08:00:01+00:00"},
+	    {"id":"m2","role":"assistant","content":"yo","model":null,"file_ids":[],"created_at":"2026-10-04T08:00:02+00:00"}]}]`)
+	sess, err := st.Get(bg, userA, sessA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.query["select"], "model") {
+		t.Errorf("select must request the model column: %q", got.query["select"])
+	}
+	if sess.Messages[0].Model != "kimi-k3" || sess.Messages[1].Model != "" {
+		t.Errorf("models = %q, %q", sess.Messages[0].Model, sess.Messages[1].Model)
 	}
 }

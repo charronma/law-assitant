@@ -22,7 +22,7 @@ func mustCreate(t *testing.T, s *SessionStore, user string, m Module, title stri
 
 func mustAdd(t *testing.T, s *SessionStore, user, sid, role, content string) {
 	t.Helper()
-	if _, err := s.AddMessage(bg, user, sid, role, content, nil); err != nil {
+	if _, err := s.AddMessage(bg, user, sid, role, content, "", nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -90,7 +90,7 @@ func TestSessionStore_ConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				if _, err := s.AddMessage(bg, "u1", sess.ID, "user", "msg", nil); err != nil {
+				if _, err := s.AddMessage(bg, "u1", sess.ID, "user", "msg", "", nil); err != nil {
 					t.Error(err)
 					return
 				}
@@ -130,7 +130,7 @@ func TestSessionStore_UserIsolation(t *testing.T) {
 	if _, err := s.Get(bg, "bob", mine.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get: got %v, want ErrNotFound", err)
 	}
-	if _, err := s.AddMessage(bg, "bob", mine.ID, "user", "injected", nil); !errors.Is(err, ErrNotFound) {
+	if _, err := s.AddMessage(bg, "bob", mine.ID, "user", "injected", "", nil); !errors.Is(err, ErrNotFound) {
 		t.Errorf("AddMessage: got %v, want ErrNotFound", err)
 	}
 	if err := s.Delete(bg, "bob", mine.ID); !errors.Is(err, ErrNotFound) {
@@ -187,5 +187,25 @@ func TestFileStore_UserIsolation(t *testing.T) {
 	}
 	if got, _ := fs.Get("alice", f.ID); got.ExtractedText != "ok" {
 		t.Errorf("ExtractedText = %q, want %q", got.ExtractedText, "ok")
+	}
+}
+
+func TestSessionStore_RecordsModelPerMessage(t *testing.T) {
+	s := NewSessionStore()
+	sess := mustCreate(t, s, "u1", ModuleConsult, "")
+	if _, err := s.AddMessage(bg, "u1", sess.ID, "user", "q", "qwen3.8-max", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddMessage(bg, "u1", sess.ID, "assistant", "a", "qwen3.8-max", nil); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, s, "u1", sess.ID, "user", "old message without a model")
+
+	got, err := s.Get(bg, "u1", sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Messages[0].Model != "qwen3.8-max" || got.Messages[1].Model != "qwen3.8-max" || got.Messages[2].Model != "" {
+		t.Errorf("models = %q %q %q", got.Messages[0].Model, got.Messages[1].Model, got.Messages[2].Model)
 	}
 }

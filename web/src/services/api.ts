@@ -1,4 +1,4 @@
-import type { ChatRequest, Session, SSEEvent, UploadedFile } from '../types';
+import type { ChatError, ChatRequest, ModelList, Session, SSEEvent, UploadedFile } from '../types';
 
 import { supabase } from '../lib/supabase';
 
@@ -71,12 +71,34 @@ export async function uploadFile(file: File, sessionId?: string): Promise<Upload
   return res.json();
 }
 
+// List the selectable models and the server's default
+export async function getModels(): Promise<ModelList> {
+  const res = await apiFetch('/models');
+  if (!res.ok) throw new Error('Failed to list models');
+  return res.json();
+}
+
+/** Normalise a server error body ({code, model, message} or the legacy {error}). */
+function toChatError(raw: unknown, fallback: string): ChatError {
+  if (raw && typeof raw === 'object') {
+    const o = raw as Record<string, unknown>;
+    const message =
+      typeof o.message === 'string' ? o.message : typeof o.error === 'string' ? o.error : fallback;
+    return {
+      code: typeof o.code === 'string' ? o.code : undefined,
+      model: typeof o.model === 'string' ? o.model : undefined,
+      message,
+    };
+  }
+  return { message: fallback };
+}
+
 // Send a chat message with SSE streaming
 export function sendChatMessage(
   req: ChatRequest,
   onToken: (content: string) => void,
   onDone: (messageId: string) => void,
-  onError: (error: string) => void,
+  onError: (error: ChatError) => void,
   onSessionId?: (sessionId: string) => void,
 ): AbortController {
   const controller = new AbortController();
@@ -89,12 +111,13 @@ export function sendChatMessage(
   })
     .then(async (res) => {
       if (res.status === 401) {
-        onError('登录已过期，请重新登录');
+        onError({ code: 'UNAUTHORIZED', message: '登录已过期，请重新登录' });
         return;
       }
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Request failed' }));
-        onError(err.error || 'Request failed');
+        // The server answers a rejected request with {code, model, message}.
+        const body = await res.json().catch(() => null);
+        onError(toChatError(body, 'Request failed'));
         return;
       }
 
@@ -106,12 +129,13 @@ export function sendChatMessage(
 
       const reader = res.body?.getReader();
       if (!reader) {
-        onError('No response body');
+        onError({ message: 'No response body' });
         return;
       }
 
       const decoder = new TextDecoder();
       let buffer = '';
+      let eventName = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -121,31 +145,43 @@ export function sendChatMessage(
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const event: SSEEvent = JSON.parse(line.slice(6));
-              switch (event.type) {
-                case 'token':
-                  if (event.content) onToken(event.content);
-                  break;
-                case 'done':
-                  onDone(event.message_id || '');
-                  break;
-                case 'error':
-                  onError(event.error || 'Unknown error');
-                  break;
-              }
-            } catch {
-              // Skip malformed events
+        for (const rawLine of lines) {
+          const line = rawLine.replace(/\r$/, '');
+          if (line === '') {
+            eventName = ''; // a blank line ends the event
+            continue;
+          }
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim();
+            continue;
+          }
+          if (!line.startsWith('data:')) continue;
+
+          try {
+            const payload = JSON.parse(line.slice(5).trim());
+            if (eventName === 'error') {
+              // Failure after output began: same JSON as a plain HTTP error.
+              onError(toChatError(payload, 'Unknown error'));
+              continue;
             }
+            const event = payload as SSEEvent;
+            switch (event.type) {
+              case 'token':
+                if (event.content) onToken(event.content);
+                break;
+              case 'done':
+                onDone(event.message_id || '');
+                break;
+            }
+          } catch {
+            // Skip malformed events
           }
         }
       }
     })
     .catch((err) => {
       if (err.name !== 'AbortError') {
-        onError(err.message || 'Network error');
+        onError({ message: err.message || 'Network error' });
       }
     });
 

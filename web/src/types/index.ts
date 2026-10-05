@@ -19,6 +19,8 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string;
   file_ids?: string[];
+  /** Model that produced this turn (absent on older messages). */
+  model?: string;
   created_at: string;
 }
 
@@ -36,15 +38,41 @@ export interface ChatRequest {
   session_id?: string;
   module: ModuleType;
   message: string;
+  /** Omit to let the server use its default model. */
+  model?: string;
   file_ids?: string[];
   metadata?: Record<string, string>;
 }
 
 export interface SSEEvent {
-  type: 'token' | 'done' | 'error';
+  type: 'token' | 'done';
   content?: string;
   message_id?: string;
-  error?: string;
+}
+
+/** Tiers the backend groups models into; unknown values are shown as "standard". */
+export type ModelTier = 'flagship' | 'standard' | 'fast';
+
+export interface ModelOption {
+  id: string;
+  label: string;
+  tier: string;
+}
+
+export interface ModelList {
+  models: ModelOption[];
+  default: string;
+}
+
+/**
+ * A failed chat request. `code` is one of QUOTA_EXHAUSTED, INVALID_API_KEY,
+ * RATE_LIMITED, UPSTREAM_ERROR, INVALID_MODEL (from the server) or
+ * UNAUTHORIZED (session expired); it is absent for unclassified failures.
+ */
+export interface ChatError {
+  code?: string;
+  model?: string;
+  message: string;
 }
 
 export interface UploadedFile {
