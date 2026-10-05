@@ -85,6 +85,26 @@ export default function ErrorBanner({
         </button>
       );
       break;
+    case 'USER_RATE_LIMITED':
+    case 'TOO_MANY_STREAMS':
+      tone = 'warning';
+      title = error.message;
+      actions = (
+        <button
+          type="button"
+          onClick={() => onRetry()}
+          className={`${BUTTON} bg-amber-600 text-white hover:bg-amber-700`}
+        >
+          重试
+        </button>
+      );
+      break;
+    // Resending the same message cannot succeed, so these offer no retry.
+    case 'MESSAGE_TOO_LONG':
+    case 'FILE_UNAVAILABLE':
+      tone = 'warning';
+      title = error.message;
+      break;
     case 'INVALID_MODEL':
       title = '所选模型已不可用，请重新选择';
       actions = (

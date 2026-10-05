@@ -53,6 +53,7 @@
 | `QWEN_BASE_URL` | 可选，默认国内站；国际站密钥需设为 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | `FRONTEND_URL` | 前端的**完整来源**，如 `https://your-app.vercel.app`（无结尾 `/`） |
 | `UPLOAD_DIR` | 默认 `/data/uploads`；挂载持久卷到 `/data` 才能保留上传文件 |
+| `CHAT_RATE_PER_MINUTE` / `UPLOAD_RATE_PER_MINUTE` / `MAX_CONCURRENT_CHATS` / `MAX_MESSAGE_CHARS` / `MAX_HISTORY_CHARS` | 可选，按用户限流与上下文预算，默认 20 / 10 / 2 / 8000 / 30000，详见 README；限流状态在进程内，多副本时每个副本各自计数 |
 
 - 监听端口：自动读取平台注入的 `PORT`（也可用 `SERVER_PORT`）；镜像默认 8080。
 - 健康检查路径：`GET /healthz`（免鉴权）。

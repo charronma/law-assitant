@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"law-assistant/internal/model"
@@ -25,6 +27,13 @@ type Config struct {
 	// File upload configuration
 	UploadDir     string
 	MaxUploadSize int64 // in bytes
+
+	// Abuse / cost controls (0 disables the rate and concurrency limits)
+	ChatRatePerMinute  int // chat requests per user per minute
+	UploadRatePerMin   int // uploads per user per minute
+	MaxConcurrentChats int // simultaneous chat streams per user
+	MaxMessageChars    int // longest single user message, in characters
+	MaxHistoryChars    int // conversation history sent to the model, in characters
 
 	// Frontend
 	FrontendURL string
@@ -71,6 +80,12 @@ func Load() (*Config, error) {
 		MaxUploadSize: 20 * 1024 * 1024, // 20MB
 		FrontendURL:   getEnvOrDefault("FRONTEND_URL", "http://localhost:5173"),
 
+		ChatRatePerMinute:  envInt("CHAT_RATE_PER_MINUTE", 20),
+		UploadRatePerMin:   envInt("UPLOAD_RATE_PER_MINUTE", 10),
+		MaxConcurrentChats: envInt("MAX_CONCURRENT_CHATS", 2),
+		MaxMessageChars:    envInt("MAX_MESSAGE_CHARS", 8000),
+		MaxHistoryChars:    envInt("MAX_HISTORY_CHARS", 30000),
+
 		SupabaseURL:            os.Getenv("SUPABASE_URL"),
 		SupabaseJWTSecret:      os.Getenv("SUPABASE_JWT_SECRET"),
 		SupabasePublishableKey: getEnvOrDefault("SUPABASE_PUBLISHABLE_KEY", os.Getenv("SUPABASE_ANON_KEY")),
@@ -108,6 +123,20 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// envInt reads a non-negative integer; unset or invalid values fall back to def.
+func envInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		log.Printf("WARNING: ignoring invalid %s=%q, using %d", key, v, def)
+		return def
+	}
+	return n
 }
 
 func getEnvOrDefault(key, defaultVal string) string {

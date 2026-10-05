@@ -201,6 +201,11 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 | QWEN_BASE_URL | 否 | https://dashscope.aliyuncs.com/compatible-mode/v1 | API 地址 |
 | SERVER_PORT | 否 | 8080 | 服务端口 |
 | UPLOAD_DIR | 否 | ./uploads | 文件上传目录 |
+| CHAT_RATE_PER_MINUTE | 否 | 20 | 每用户每分钟聊天请求数（令牌桶，0=不限）；超出返回 429 `USER_RATE_LIMITED` |
+| UPLOAD_RATE_PER_MINUTE | 否 | 10 | 每用户每分钟上传次数（0=不限） |
+| MAX_CONCURRENT_CHATS | 否 | 2 | 每用户同时生成的回答数（0=不限）；超出返回 429 `TOO_MANY_STREAMS` |
+| MAX_MESSAGE_CHARS | 否 | 8000 | 单条消息最大字符数；超出返回 413 `MESSAGE_TOO_LONG` |
+| MAX_HISTORY_CHARS | 否 | 30000 | 发送给模型的历史对话字符预算（只保留最近的整轮消息，数据库里的记录不受影响） |
 | FRONTEND_URL | 否 | http://localhost:5173 | 前端地址（CORS） |
 | SUPABASE_URL | 是* | - | Supabase 项目地址，用于获取 JWKS 校验 JWT |
 | SUPABASE_JWT_SECRET | 是* | - | 旧项目的 HS256 JWT 密钥（与 SUPABASE_URL 至少设置一个） |

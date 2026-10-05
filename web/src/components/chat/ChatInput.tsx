@@ -13,6 +13,9 @@ interface ChatInputProps {
 
 const FILE_MODULES: ModuleType[] = ['contract', 'evidence_org'];
 
+// Mirrors the server default (MAX_MESSAGE_CHARS); the server is authoritative.
+const MAX_MESSAGE_CHARS = 8000;
+
 export default function ChatInput({ onSend, onStop, isStreaming, module, sessionId }: ChatInputProps) {
   const [input, setInput] = useState('');
   const [uploadedFiles, setUploadedFiles] = useState<{ id: string; name: string; chars: number; truncated: boolean }[]>([]);
@@ -22,10 +25,12 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const showUpload = FILE_MODULES.includes(module);
+  const length = [...input].length;
+  const tooLong = length > MAX_MESSAGE_CHARS;
 
   const handleSubmit = useCallback(() => {
     const text = input.trim();
-    if (!text || isStreaming) return;
+    if (!text || isStreaming || [...text].length > MAX_MESSAGE_CHARS) return;
     const fileIds = uploadedFiles.map(f => f.id);
     onSend(text, fileIds.length > 0 ? fileIds : undefined);
     setInput('');
@@ -153,7 +158,7 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
         ) : (
           <button
             onClick={handleSubmit}
-            disabled={!input.trim()}
+            disabled={!input.trim() || tooLong}
             className="shrink-0 p-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             title="发送"
           >
@@ -165,6 +170,15 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
       {isUploading && (
         <p className="text-xs text-gray-400 mt-1">文件上传中...</p>
       )}
+      {length > MAX_MESSAGE_CHARS * 0.9 && (
+        <p className={`text-xs mt-1 ${tooLong ? 'text-red-600' : 'text-gray-400'}`}>
+          {length} / {MAX_MESSAGE_CHARS}
+          {tooLong && '：消息过长，请缩短或拆分；长文档请使用上传功能'}
+        </p>
+      )}
+      <p data-testid="disclaimer" className="text-[11px] leading-4 text-gray-400 mt-2">
+        AI 生成内容仅供参考，不构成法律意见，重要事项请咨询执业律师。请勿输入身份证号、银行卡号等敏感个人信息；对话与上传内容会发送至第三方大模型服务处理。
+      </p>
     </div>
   );
 }

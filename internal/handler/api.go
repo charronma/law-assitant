@@ -9,6 +9,7 @@ import (
 	"law-assistant/internal/agent"
 	"law-assistant/internal/auth"
 	"law-assistant/internal/config"
+	"law-assistant/internal/limit"
 	"law-assistant/internal/model"
 	"law-assistant/internal/store"
 	"law-assistant/internal/tool"
@@ -23,6 +24,9 @@ type Server struct {
 	docParser    *tool.DocumentParser
 	auth         *auth.Authenticator
 	models       *model.Registry
+	chatRate     *limit.Rate
+	uploadRate   *limit.Rate
+	chatStreams  *limit.Concurrency
 }
 
 // NewServer creates a new server with all dependencies
@@ -35,6 +39,9 @@ func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore st
 		docParser:    tool.NewDocumentParser(),
 		auth:         authn,
 		models:       models,
+		chatRate:     limit.NewRate(cfg.ChatRatePerMinute, 0),
+		uploadRate:   limit.NewRate(cfg.UploadRatePerMin, 0),
+		chatStreams:  limit.NewConcurrency(cfg.MaxConcurrentChats),
 	}
 }
 
@@ -117,6 +124,13 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeAPIError sends a structured model/request error: {"code","model","message"}.
+// Codes for limits enforced by this server (as opposed to the upstream model's).
+const (
+	codeUserRateLimited = "USER_RATE_LIMITED"
+	codeTooManyStreams  = "TOO_MANY_STREAMS"
+	codeMessageTooLong  = "MESSAGE_TOO_LONG"
+)
+
 func writeAPIError(w http.ResponseWriter, e *model.APIError) {
 	writeJSON(w, e.Status, e)
 }

@@ -8,8 +8,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -28,6 +30,10 @@ type ChatRequest struct {
 	FileIDs  []string          `json:"file_ids,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
+
+// maxChatBodyBytes bounds the JSON body of /api/chat (messages are capped
+// separately in characters; this stops oversized payloads before decoding).
+const maxChatBodyBytes = 256 << 10
 
 // streamWriteTimeout bounds a single streaming chat response.
 const streamWriteTimeout = 10 * time.Minute
@@ -48,8 +54,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxChatBodyBytes)
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeUploadError(w, http.StatusRequestEntityTooLarge, codeMessageTooLong, "消息过长，请缩短后再发送")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
@@ -58,6 +70,27 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Message is required")
 		return
 	}
+	if max := s.cfg.MaxMessageChars; max > 0 && utf8.RuneCountInString(req.Message) > max {
+		writeUploadError(w, http.StatusRequestEntityTooLarge, codeMessageTooLong,
+			fmt.Sprintf("消息过长（最多 %d 字），请缩短或拆分后再发送；长文档请用上传功能", max))
+		return
+	}
+
+	// Per-user cost controls. Cheap checks above run first so malformed
+	// requests do not burn the user's budget.
+	if ok, retry := s.chatRate.Allow(userID); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())))
+		writeUploadError(w, http.StatusTooManyRequests, codeUserRateLimited,
+			fmt.Sprintf("发送太频繁，请 %d 秒后再试", int(retry.Seconds())))
+		return
+	}
+	release, ok := s.chatStreams.Acquire(userID)
+	if !ok {
+		writeUploadError(w, http.StatusTooManyRequests, codeTooManyStreams,
+			"你有多个回答正在生成，请等待完成后再发送")
+		return
+	}
+	defer release()
 
 	modelID, err := s.models.Resolve(req.Model)
 	if err != nil {
@@ -95,7 +128,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err, "load session")
 		return
 	}
-	messages := append(buildSchemaMessages(session.Messages), schema.UserMessage(req.Message))
+	messages := append(buildSchemaMessages(session.Messages, s.cfg.MaxHistoryChars), schema.UserMessage(req.Message))
 
 	// Attach uploaded documents (any module). They go in as a delimited user
 	// message, not a system message: the text is untrusted data.
@@ -225,19 +258,38 @@ func sendSSEError(w http.ResponseWriter, flusher http.Flusher, apiErr *model.API
 }
 
 // buildSchemaMessages converts store messages to schema messages
-func buildSchemaMessages(messages []store.Message) []*schema.Message {
-	result := make([]*schema.Message, 0, len(messages))
-	for _, msg := range messages {
-		var schemaMsg *schema.Message
-		switch msg.Role {
-		case "user":
-			schemaMsg = schema.UserMessage(msg.Content)
-		case "assistant":
-			schemaMsg = schema.AssistantMessage(msg.Content, nil)
-		default:
-			continue
+// buildSchemaMessages converts stored history to model messages, keeping only
+// the most recent messages that fit in maxChars (0 = no limit). Whole messages
+// are kept or dropped, and the window never starts with an assistant reply.
+func buildSchemaMessages(messages []store.Message, maxChars int) []*schema.Message {
+	var kept []store.Message
+	for _, m := range messages {
+		if m.Role == "user" || m.Role == "assistant" {
+			kept = append(kept, m)
 		}
-		result = append(result, schemaMsg)
+	}
+	if maxChars > 0 {
+		used, start := 0, len(kept)
+		for start > 0 {
+			n := utf8.RuneCountInString(kept[start-1].Content)
+			if used+n > maxChars {
+				break
+			}
+			used += n
+			start--
+		}
+		kept = kept[start:]
+		for len(kept) > 0 && kept[0].Role != "user" {
+			kept = kept[1:]
+		}
+	}
+	result := make([]*schema.Message, 0, len(kept))
+	for _, m := range kept {
+		if m.Role == "user" {
+			result = append(result, schema.UserMessage(m.Content))
+		} else {
+			result = append(result, schema.AssistantMessage(m.Content, nil))
+		}
 	}
 	return result
 }

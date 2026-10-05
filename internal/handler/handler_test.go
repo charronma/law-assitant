@@ -32,13 +32,19 @@ type testEnv struct {
 	dir   string // upload directory
 }
 
-func newTestEnv(t *testing.T) *testEnv {
+func newTestEnv(t *testing.T) *testEnv { return newTestEnvCfg(t, nil) }
+
+// newTestEnvCfg builds a test server; tweak may adjust the config (e.g. limits).
+func newTestEnvCfg(t *testing.T, tweak func(*config.Config)) *testEnv {
 	t.Helper()
 	authn, err := auth.New(context.Background(), auth.Config{JWTSecret: testSecret})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{FrontendURL: "http://localhost:5173", MaxUploadSize: 1 << 20}
+	if tweak != nil {
+		tweak(cfg)
+	}
 	dir := t.TempDir()
 	files := store.NewFileStore(dir)
 	llm := newFakeLLM()

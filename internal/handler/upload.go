@@ -2,8 +2,10 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 
 	"law-assistant/internal/tool"
 )
@@ -49,6 +51,13 @@ func extractionFailure(err error) (int, string, string) {
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUser(w, r)
 	if !ok {
+		return
+	}
+
+	if ok, retry := s.uploadRate.Allow(userID); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())))
+		writeUploadError(w, http.StatusTooManyRequests, codeUserRateLimited,
+			fmt.Sprintf("上传太频繁，请 %d 秒后再试", int(retry.Seconds())))
 		return
 	}
 
