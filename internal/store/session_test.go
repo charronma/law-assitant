@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -8,20 +9,34 @@ import (
 	"time"
 )
 
-func TestSessionStore_GetReturnsSnapshot(t *testing.T) {
-	s := NewSessionStore()
-	sess := s.Create("u1", ModuleConsult, "")
-	if _, err := s.AddMessage("u1", sess.ID, "user", "hello", nil); err != nil {
-		t.Fatal(err)
-	}
+var bg = context.Background()
 
-	snap, err := s.Get("u1", sess.ID)
+func mustCreate(t *testing.T, s *SessionStore, user string, m Module, title string) *Session {
+	t.Helper()
+	sess, err := s.Create(bg, user, m, title)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AddMessage("u1", sess.ID, "assistant", "hi", nil); err != nil {
+	return sess
+}
+
+func mustAdd(t *testing.T, s *SessionStore, user, sid, role, content string) {
+	t.Helper()
+	if _, err := s.AddMessage(bg, user, sid, role, content, nil); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestSessionStore_GetReturnsSnapshot(t *testing.T) {
+	s := NewSessionStore()
+	sess := mustCreate(t, s, "u1", ModuleConsult, "")
+	mustAdd(t, s, "u1", sess.ID, "user", "hello")
+
+	snap, err := s.Get(bg, "u1", sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, s, "u1", sess.ID, "assistant", "hi")
 
 	if got := len(snap.Messages); got != 1 {
 		t.Fatalf("snapshot mutated after AddMessage: got %d messages, want 1", got)
@@ -33,19 +48,20 @@ func TestSessionStore_GetReturnsSnapshot(t *testing.T) {
 
 func TestSessionStore_ListSortedNewestFirstWithoutMessages(t *testing.T) {
 	s := NewSessionStore()
-	a := s.Create("u1", ModuleConsult, "a")
+	a := mustCreate(t, s, "u1", ModuleConsult, "a")
 	time.Sleep(2 * time.Millisecond)
-	b := s.Create("u1", ModulePleading, "b")
+	b := mustCreate(t, s, "u1", ModulePleading, "b")
 	time.Sleep(2 * time.Millisecond)
-	c := s.Create("u1", ModuleContract, "c")
+	c := mustCreate(t, s, "u1", ModuleContract, "c")
 
 	// Touching the oldest session must move it to the front.
 	time.Sleep(2 * time.Millisecond)
-	if _, err := s.AddMessage("u1", a.ID, "user", "bump", nil); err != nil {
+	mustAdd(t, s, "u1", a.ID, "user", "bump")
+
+	list, err := s.List(bg, "u1")
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	list := s.List("u1")
 	want := []string{a.ID, c.ID, b.ID}
 	if len(list) != len(want) {
 		t.Fatalf("got %d sessions, want %d", len(list), len(want))
@@ -66,7 +82,7 @@ func TestSessionStore_ListSortedNewestFirstWithoutMessages(t *testing.T) {
 // Run with -race: readers and writers must not touch shared state unlocked.
 func TestSessionStore_ConcurrentAccess(t *testing.T) {
 	s := NewSessionStore()
-	sess := s.Create("u1", ModuleConsult, "")
+	sess := mustCreate(t, s, "u1", ModuleConsult, "")
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -74,7 +90,7 @@ func TestSessionStore_ConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				if _, err := s.AddMessage("u1", sess.ID, "user", "msg", nil); err != nil {
+				if _, err := s.AddMessage(bg, "u1", sess.ID, "user", "msg", nil); err != nil {
 					t.Error(err)
 					return
 				}
@@ -83,19 +99,22 @@ func TestSessionStore_ConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				got, err := s.Get("u1", sess.ID)
+				got, err := s.Get(bg, "u1", sess.ID)
 				if err != nil {
 					t.Error(err)
 					return
 				}
 				_ = len(got.Messages)
-				_ = s.List("u1")
+				if _, err := s.List(bg, "u1"); err != nil {
+					t.Error(err)
+					return
+				}
 			}
 		}()
 	}
 	wg.Wait()
 
-	got, _ := s.Get("u1", sess.ID)
+	got, _ := s.Get(bg, "u1", sess.ID)
 	if len(got.Messages) != 8*200 {
 		t.Fatalf("got %d messages, want %d", len(got.Messages), 8*200)
 	}
@@ -103,39 +122,47 @@ func TestSessionStore_ConcurrentAccess(t *testing.T) {
 
 func TestSessionStore_UserIsolation(t *testing.T) {
 	s := NewSessionStore()
-	mine := s.Create("alice", ModuleConsult, "mine")
-	if _, err := s.AddMessage("alice", mine.ID, "user", "secret", nil); err != nil {
-		t.Fatal(err)
-	}
+	mine := mustCreate(t, s, "alice", ModuleConsult, "mine")
+	mustAdd(t, s, "alice", mine.ID, "user", "secret")
 
 	// Another user sees nothing of alice's session, and every operation on it
 	// fails exactly like a missing session.
-	if _, err := s.Get("bob", mine.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Get(bg, "bob", mine.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get: got %v, want ErrNotFound", err)
 	}
-	if _, err := s.GetMessages("bob", mine.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("GetMessages: got %v, want ErrNotFound", err)
-	}
-	if _, err := s.AddMessage("bob", mine.ID, "user", "injected", nil); !errors.Is(err, ErrNotFound) {
+	if _, err := s.AddMessage(bg, "bob", mine.ID, "user", "injected", nil); !errors.Is(err, ErrNotFound) {
 		t.Errorf("AddMessage: got %v, want ErrNotFound", err)
 	}
-	if err := s.Delete("bob", mine.ID); !errors.Is(err, ErrNotFound) {
+	if err := s.Delete(bg, "bob", mine.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Delete: got %v, want ErrNotFound", err)
 	}
-	if got := s.List("bob"); len(got) != 0 {
+	if got, _ := s.List(bg, "bob"); len(got) != 0 {
 		t.Errorf("List(bob) = %d sessions, want 0", len(got))
 	}
 
 	// Alice's data is untouched by bob's attempts.
-	got, err := s.Get("alice", mine.ID)
+	got, err := s.Get(bg, "alice", mine.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got.Messages) != 1 || got.Messages[0].Content != "secret" {
 		t.Errorf("alice's session was modified: %+v", got.Messages)
 	}
-	if got := s.List("alice"); len(got) != 1 {
+	if got, _ := s.List(bg, "alice"); len(got) != 1 {
 		t.Errorf("List(alice) = %d sessions, want 1", len(got))
+	}
+}
+
+func TestModuleValid(t *testing.T) {
+	for _, m := range []Module{ModuleConsult, ModulePleading, ModuleContract, ModuleEvidenceOrg, ModuleEvidence, ModuleCommunication} {
+		if !m.Valid() {
+			t.Errorf("%q should be valid", m)
+		}
+	}
+	for _, m := range []Module{"", "hacking", "CONSULT"} {
+		if m.Valid() {
+			t.Errorf("%q should be invalid", m)
+		}
 	}
 }
 

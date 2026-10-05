@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,21 +60,29 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if req.Module == "" {
 			module = store.ModuleConsult
 		}
-		session := s.sessionStore.Create(userID, module, "")
-		req.SessionID = session.ID
+		if !module.Valid() {
+			writeError(w, http.StatusBadRequest, "Unknown module")
+			return
+		}
+		created, err := s.sessionStore.Create(r.Context(), userID, module, "")
+		if err != nil {
+			writeStoreError(w, err, "create session")
+			return
+		}
+		req.SessionID = created.ID
 	}
 
 	// Save user message
-	_, err := s.sessionStore.AddMessage(userID, req.SessionID, "user", req.Message, req.FileIDs)
+	_, err := s.sessionStore.AddMessage(r.Context(), userID, req.SessionID, "user", req.Message, req.FileIDs)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "Session not found")
+		writeStoreError(w, err, "save user message")
 		return
 	}
 
-	// Get session to determine module
-	session, err := s.sessionStore.Get(userID, req.SessionID)
+	// Get session (with history) to determine module
+	session, err := s.sessionStore.Get(r.Context(), userID, req.SessionID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "Session not found")
+		writeStoreError(w, err, "load session")
 		return
 	}
 
@@ -151,7 +160,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// leave blank assistant turns in the history sent to the model)
 	msgID := ""
 	if fullContent.Len() > 0 {
-		assistantMsg, err := s.sessionStore.AddMessage(userID, req.SessionID, "assistant", fullContent.String(), nil)
+		// Detach from the request's cancellation: a client that disconnected
+		// mid-stream should not lose the reply that was already generated.
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+		defer cancel()
+		assistantMsg, err := s.sessionStore.AddMessage(saveCtx, userID, req.SessionID, "assistant", fullContent.String(), nil)
 		if err != nil {
 			log.Printf("Failed to save assistant message: %v", err)
 		} else {

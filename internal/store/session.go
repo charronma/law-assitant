@@ -2,6 +2,7 @@ package store
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -15,6 +16,27 @@ import (
 // user; callers cannot (and must not) tell the two apart.
 var ErrNotFound = errors.New("session not found")
 
+// ErrInvalidInput is returned when the backing store rejects a value (for
+// example an unknown module).
+var ErrInvalidInput = errors.New("invalid input")
+
+// ErrUnauthorized is returned when the backing store rejects the caller's
+// credentials (for example an expired access token).
+var ErrUnauthorized = errors.New("unauthorized")
+
+// SessionRepository is the persistence boundary for chat sessions. Every
+// method is scoped to userID; a session owned by someone else behaves exactly
+// like a missing one (ErrNotFound).
+type SessionRepository interface {
+	Create(ctx context.Context, userID string, module Module, title string) (*Session, error)
+	// Get returns the session together with its full message history.
+	Get(ctx context.Context, userID, id string) (*Session, error)
+	// List returns session summaries (no messages), newest first.
+	List(ctx context.Context, userID string) ([]*Session, error)
+	Delete(ctx context.Context, userID, id string) error
+	AddMessage(ctx context.Context, userID, sessionID, role, content string, fileIDs []string) (*Message, error)
+}
+
 // Module represents the functional module type
 type Module string
 
@@ -26,6 +48,15 @@ const (
 	ModuleEvidence      Module = "evidence"
 	ModuleCommunication Module = "communication"
 )
+
+// Valid reports whether m is one of the known modules.
+func (m Module) Valid() bool {
+	switch m {
+	case ModuleConsult, ModulePleading, ModuleContract, ModuleEvidenceOrg, ModuleEvidence, ModuleCommunication:
+		return true
+	}
+	return false
+}
 
 // Message represents a single chat message
 type Message struct {
@@ -49,7 +80,8 @@ type Session struct {
 	MessageCount int       `json:"message_count"`
 }
 
-// SessionStore manages chat sessions in memory
+// SessionStore is an in-memory SessionRepository. Sessions are lost on restart;
+// it is used for local development and tests.
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -63,7 +95,7 @@ func NewSessionStore() *SessionStore {
 }
 
 // Create creates a new session owned by userID
-func (s *SessionStore) Create(userID string, module Module, title string) *Session {
+func (s *SessionStore) Create(_ context.Context, userID string, module Module, title string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -83,7 +115,7 @@ func (s *SessionStore) Create(userID string, module Module, title string) *Sessi
 
 	s.sessions[session.ID] = session
 	snapshot := *session
-	return &snapshot
+	return &snapshot, nil
 }
 
 // owned returns the session if it exists and belongs to userID.
@@ -98,7 +130,7 @@ func (s *SessionStore) owned(userID, id string) (*Session, error) {
 
 // Get returns a snapshot of the user's session with the given ID. The returned
 // value is a copy and is safe to read without holding the store lock.
-func (s *SessionStore) Get(userID, id string) (*Session, error) {
+func (s *SessionStore) Get(_ context.Context, userID, id string) (*Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -113,7 +145,7 @@ func (s *SessionStore) Get(userID, id string) (*Session, error) {
 
 // List returns snapshots of the user's sessions sorted by update time (newest
 // first). Messages are omitted; use Get to load the full history.
-func (s *SessionStore) List(userID string) []*Session {
+func (s *SessionStore) List(_ context.Context, userID string) ([]*Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -131,11 +163,11 @@ func (s *SessionStore) List(userID string) []*Session {
 		return cmp.Compare(b.UpdatedAt.UnixNano(), a.UpdatedAt.UnixNano())
 	})
 
-	return sessions
+	return sessions, nil
 }
 
 // Delete removes a session
-func (s *SessionStore) Delete(userID, id string) error {
+func (s *SessionStore) Delete(_ context.Context, userID, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -147,7 +179,7 @@ func (s *SessionStore) Delete(userID, id string) error {
 }
 
 // AddMessage adds a message to a session
-func (s *SessionStore) AddMessage(userID, sessionID, role, content string, fileIDs []string) (*Message, error) {
+func (s *SessionStore) AddMessage(_ context.Context, userID, sessionID, role, content string, fileIDs []string) (*Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -181,18 +213,6 @@ func (s *SessionStore) AddMessage(userID, sessionID, role, content string, fileI
 	return &msg, nil
 }
 
-// GetMessages returns all messages for a session
-func (s *SessionStore) GetMessages(userID, sessionID string) ([]Message, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	session, err := s.owned(userID, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	return slices.Clone(session.Messages), nil
-}
-
 func getDefaultTitle(module Module) string {
 	switch module {
 	case ModuleConsult:
@@ -211,3 +231,5 @@ func getDefaultTitle(module Module) string {
 		return "新建会话"
 	}
 }
+
+var _ SessionRepository = (*SessionStore)(nil)

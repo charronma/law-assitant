@@ -13,8 +13,10 @@
 会话保存在进程内存里，且 `/api/chat` 是可能持续数分钟的 SSE 流式响应。
 
 > ⚠️ 当前限制（公开部署前请知晓）
-> - 会话存在内存里：**重启 / 重新部署即丢失**，并且**只能跑 1 个实例**（多实例会话互相看不到）。
-> - 上传文件存在本地磁盘（`UPLOAD_DIR`）：需要挂载持久卷才能在重启后保留。
+> - 会话与消息存在 Supabase Postgres 里（见第 1 步），重启 / 重新部署不会丢失。
+>   **前提是同时设置了 `SUPABASE_URL` 和 `SUPABASE_PUBLISHABLE_KEY`**；漏设时后端会退回内存存储（只在启动日志里打印一条警告，不会报错），务必检查。
+> - 上传文件的**元数据和文本缓存在进程内存里**，文件本身在本地磁盘（`UPLOAD_DIR`）：重启后已上传的文件无法再被引用，
+>   并且**只能跑 1 个实例**（多实例间互相看不到）。迁移到 Supabase Storage 之前请保持单实例。
 > - **没有限流**：任何注册用户都能消耗你的千问额度。
 > - CORS 只允许 `FRONTEND_URL` 这一个来源，Vercel 的预览部署域名会被拦截。
 
@@ -29,6 +31,10 @@
 5. 新项目使用非对称签名密钥，后端只需要 `SUPABASE_URL`。如果你的项目仍是旧版 HS256 JWT，
    另外把 **JWT Secret** 设为后端的 `SUPABASE_JWT_SECRET`（后端会根据 token 的签名算法自动选择验证方式）。
 
+6. **创建数据表**：执行 `supabase/migrations/20261004000000_chat_persistence.sql`
+   （控制台 SQL Editor 粘贴运行，或 `supabase link` 后 `supabase db push`）。它会创建 `chat_sessions` / `chat_messages`，
+   开启 RLS 并只授权给已登录用户。之后在控制台 **Advisors → Security** 确认没有告警。
+
 > 🔒 **不要**把 `service_role` key 或 JWT Secret 放进前端（任何 `VITE_*` 变量）或提交进仓库。
 
 ## 2. 后端（Docker）
@@ -39,6 +45,7 @@
 |------|-----|
 | `DASHSCOPE_API_KEY` | 百炼 API Key（作为 secret） |
 | `SUPABASE_URL` | 上一步的 Project URL |
+| `SUPABASE_PUBLISHABLE_KEY` | Supabase 的 publishable key（`sb_publishable_...`，公开密钥）。设置后会话才会持久化 |
 | `SUPABASE_JWT_SECRET` | 仅旧版 HS256 项目需要 |
 | `FRONTEND_URL` | 前端的**完整来源**，如 `https://your-app.vercel.app`（无结尾 `/`） |
 | `UPLOAD_DIR` | 默认 `/data/uploads`；挂载持久卷到 `/data` 才能保留上传文件 |
@@ -68,14 +75,17 @@
 ```bash
 curl -i https://<backend>/healthz                 # 200 {"status":"ok"}
 curl -i https://<backend>/api/sessions            # 401（未带 token，说明鉴权生效）
+curl -s https://<ref>.supabase.co/auth/v1/.well-known/jwks.json   # 应返回 {"keys":[...]}，后端靠它验证 token
 ```
+
+`jwks.json` 里的 `keys` 为空数组，说明这个项目仍在使用旧版 HS256 密钥：此时后端需要额外设置 `SUPABASE_JWT_SECRET`。
 
 然后在浏览器打开前端：注册 / 登录 → 发一条咨询 → 能看到流式回复 → 刷新页面仍保持登录。
 如果浏览器控制台出现 CORS 错误，检查后端 `FRONTEND_URL` 是否与前端域名**完全一致**（协议、域名、无结尾 `/`）。
 
 ## 5. 公开上线前建议完成
 
-- [ ] 会话持久化（Supabase Postgres），摆脱"单实例 + 重启丢数据"
+- [x] 会话持久化（Supabase Postgres）
 - [ ] 每用户限流 / 额度控制
 - [ ] 上传文件迁移到 Supabase Storage（私有 bucket）
 - [ ] 评估合同等敏感文件发送给第三方模型的合规与脱敏要求

@@ -20,6 +20,7 @@ const DevUserID = "dev-user"
 const supabaseAudience = "authenticated"
 
 type ctxKey struct{}
+type tokenKey struct{}
 
 // Config selects how tokens are verified.
 //
@@ -106,7 +107,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		userID, err := a.verify(r)
+		userID, rawToken, err := a.verify(r)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="law-assistant"`)
 			w.Header().Set("Content-Type", "application/json")
@@ -114,25 +115,38 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			_, _ = w.Write([]byte(`{"error":"Unauthorized"}`))
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, userID)))
+		ctx := context.WithValue(r.Context(), ctxKey{}, userID)
+		ctx = context.WithValue(ctx, tokenKey{}, rawToken)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-func (a *Authenticator) verify(r *http.Request) (string, error) {
+// verify validates the request's bearer token and returns the user ID (the
+// `sub` claim) together with the raw, already-verified token.
+func (a *Authenticator) verify(r *http.Request) (userID, rawToken string, err error) {
 	scheme, raw, ok := strings.Cut(r.Header.Get("Authorization"), " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(raw) == "" {
-		return "", errors.New("missing bearer token")
+	raw = strings.TrimSpace(raw)
+	if !ok || !strings.EqualFold(scheme, "Bearer") || raw == "" {
+		return "", "", errors.New("missing bearer token")
 	}
 
-	token, err := a.parser.Parse(strings.TrimSpace(raw), a.keyfunc)
+	token, err := a.parser.Parse(raw, a.keyfunc)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	sub, err := token.Claims.GetSubject()
 	if err != nil || sub == "" {
-		return "", errors.New("token has no subject")
+		return "", "", errors.New("token has no subject")
 	}
-	return sub, nil
+	return sub, raw, nil
+}
+
+// Token returns the caller's verified access token, so it can be forwarded to
+// Supabase and have Row Level Security enforced as that user. It is absent when
+// authentication is disabled.
+func Token(ctx context.Context) (string, bool) {
+	tok, ok := ctx.Value(tokenKey{}).(string)
+	return tok, ok && tok != ""
 }
 
 // UserID returns the authenticated user's ID from the request context.

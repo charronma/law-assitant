@@ -120,6 +120,24 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 - 后端在既没配置 `SUPABASE_URL`/`SUPABASE_JWT_SECRET`、又没设置 `AUTH_DISABLED=true` 时拒绝启动（fail closed）。
 - `AUTH_DISABLED=true` 仅用于本地开发：所有请求都以 `dev-user` 身份运行，启动时会打印警告。**不要在部署环境使用**。
 
+## 会话持久化（Supabase Postgres）
+
+同时设置 `SUPABASE_URL` 和 `SUPABASE_PUBLISHABLE_KEY` 后，会话与消息存入 Supabase 的
+`chat_sessions` / `chat_messages` 两张表；未设置则退回内存存储（重启即丢，仅适合本地开发）。
+
+1. 在项目里执行迁移 [`supabase/migrations/20261004000000_chat_persistence.sql`](supabase/migrations/20261004000000_chat_persistence.sql)
+   （Supabase 控制台 SQL Editor，或 `supabase db push`）。
+2. 设置上述两个环境变量。
+
+设计要点：
+
+- 后端**不使用** service_role 密钥或数据库密码。它把已通过校验的**用户自己的 access token** 转发给 Supabase REST 接口
+  （`apikey` 头放公开的 publishable key，`Authorization: Bearer` 放用户 token），因此数据库以 `authenticated` 角色执行语句，
+  由 **Row Level Security** 强制"只能访问自己的行"。后端查询另外显式带上 `user_id` 过滤，隔离不只依赖 RLS 一层。
+- 消息只能写入属于自己的会话；`anon`（未登录）角色没有任何权限；`user_id` 不可被修改。
+- 触发器会在新增消息时更新会话的 `updated_at`，并用首条用户消息的前 20 个字符生成标题。
+- 上传的文件目前仍在本地磁盘（`UPLOAD_DIR`），不在数据库里。
+
 ## API 接口
 
 > 除 `GET /healthz`（健康检查，免鉴权）外，以下接口均需携带 Bearer token，且只能访问当前用户自己的数据。
@@ -147,6 +165,7 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 | FRONTEND_URL | 否 | http://localhost:5173 | 前端地址（CORS） |
 | SUPABASE_URL | 是* | - | Supabase 项目地址，用于获取 JWKS 校验 JWT |
 | SUPABASE_JWT_SECRET | 是* | - | 旧项目的 HS256 JWT 密钥（与 SUPABASE_URL 至少设置一个） |
+| SUPABASE_PUBLISHABLE_KEY | 否 | - | Supabase publishable（或旧 anon）key，公开密钥。与 `SUPABASE_URL` 一起设置后，会话改存 Supabase Postgres；否则存内存（重启即丢） |
 | AUTH_DISABLED | 否 | false | 仅限本地开发：设为 `true` 关闭鉴权 |
 
 \* 未设置 `AUTH_DISABLED=true` 时，`SUPABASE_URL` 与 `SUPABASE_JWT_SECRET` 至少需要设置一个，否则后端拒绝启动。

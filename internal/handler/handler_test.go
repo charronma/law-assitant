@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -165,9 +166,9 @@ func TestChatCannotUseAnotherUsersSession(t *testing.T) {
 	}
 
 	// The rejected message must not have been written into alice's history.
-	msgs, err := e.srv.sessionStore.GetMessages("alice", id)
-	if err != nil || len(msgs) != 0 {
-		t.Fatalf("alice's history was modified: %v, %v", msgs, err)
+	got, err := e.srv.sessionStore.Get(context.Background(), "alice", id)
+	if err != nil || len(got.Messages) != 0 {
+		t.Fatalf("alice's history was modified: %+v, %v", got, err)
 	}
 }
 
@@ -199,5 +200,69 @@ func TestUploadedFilesAreOwnedByUploader(t *testing.T) {
 	}
 	if got := e.srv.getFileContents("bob", []string{up.FileID}); strings.Contains(got, "保密条款") {
 		t.Errorf("another user read alice's file: %q", got)
+	}
+}
+
+// failingRepo is a SessionRepository whose every call fails with err.
+type failingRepo struct{ err error }
+
+func (f failingRepo) Create(context.Context, string, store.Module, string) (*store.Session, error) {
+	return nil, f.err
+}
+func (f failingRepo) Get(context.Context, string, string) (*store.Session, error) { return nil, f.err }
+func (f failingRepo) List(context.Context, string) ([]*store.Session, error)      { return nil, f.err }
+func (f failingRepo) Delete(context.Context, string, string) error                { return f.err }
+func (f failingRepo) AddMessage(context.Context, string, string, string, string, []string) (*store.Message, error) {
+	return nil, f.err
+}
+
+func TestStoreErrorsMapToHTTPStatuses(t *testing.T) {
+	authn, err := auth.New(context.Background(), auth.Config{JWTSecret: testSecret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{FrontendURL: "http://localhost:5173", MaxUploadSize: 1 << 20}
+	alice := token(t, "alice")
+
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"expired token at the database", store.ErrUnauthorized, http.StatusUnauthorized},
+		{"not found", store.ErrNotFound, http.StatusNotFound},
+		{"rejected value", store.ErrInvalidInput, http.StatusBadRequest},
+		{"unexpected failure", io.ErrUnexpectedEOF, http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(cfg, nil, failingRepo{err: tc.err}, store.NewFileStore(t.TempDir()), authn)
+			e := &testEnv{srv: srv, h: srv.SetupRoutes()}
+			if rec := e.do("GET", "/api/sessions", alice, nil, ""); rec.Code != tc.want {
+				t.Errorf("GET /api/sessions: got %d, want %d", rec.Code, tc.want)
+			}
+			if rec := e.do("DELETE", "/api/sessions/some-id", alice, nil, ""); rec.Code != tc.want {
+				t.Errorf("DELETE: got %d, want %d", rec.Code, tc.want)
+			}
+		})
+	}
+
+	// Internal error details must never reach the client.
+	secret := "connection to db.internal:5432 failed"
+	srv := NewServer(cfg, nil, failingRepo{err: errors.New(secret)}, store.NewFileStore(t.TempDir()), authn)
+	e := &testEnv{srv: srv, h: srv.SetupRoutes()}
+	if rec := e.do("GET", "/api/sessions", alice, nil, ""); strings.Contains(rec.Body.String(), "db.internal") {
+		t.Errorf("internal error leaked to the client: %s", rec.Body)
+	}
+}
+
+func TestUnknownModuleIsRejected(t *testing.T) {
+	e := newTestEnv(t)
+	alice := token(t, "alice")
+	if rec := e.do("POST", "/api/sessions", alice, strings.NewReader(`{"module":"hacking"}`), "application/json"); rec.Code != http.StatusBadRequest {
+		t.Errorf("create session: got %d, want 400", rec.Code)
+	}
+	if rec := e.do("POST", "/api/chat", alice, strings.NewReader(`{"module":"hacking","message":"hi"}`), "application/json"); rec.Code != http.StatusBadRequest {
+		t.Errorf("chat auto-create: got %d, want 400", rec.Code)
 	}
 }

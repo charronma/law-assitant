@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
@@ -16,14 +17,14 @@ import (
 type Server struct {
 	cfg          *config.Config
 	agentManager *agent.AgentManager
-	sessionStore *store.SessionStore
+	sessionStore store.SessionRepository
 	fileStore    *store.FileStore
 	docParser    *tool.DocumentParser
 	auth         *auth.Authenticator
 }
 
 // NewServer creates a new server with all dependencies
-func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore *store.SessionStore, fileStore *store.FileStore, authn *auth.Authenticator) *Server {
+func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore store.SessionRepository, fileStore *store.FileStore, authn *auth.Authenticator) *Server {
 	return &Server{
 		cfg:          cfg,
 		agentManager: agentMgr,
@@ -85,6 +86,22 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// writeStoreError maps a persistence error to an HTTP response. Unexpected
+// errors are logged with detail but never echoed to the client.
+func writeStoreError(w http.ResponseWriter, err error, action string) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "Session not found")
+	case errors.Is(err, store.ErrUnauthorized):
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
+	case errors.Is(err, store.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, "Invalid request")
+	default:
+		log.Printf("%s: %v", action, err)
+		writeError(w, http.StatusInternalServerError, "Internal server error")
+	}
 }
 
 // writeJSON writes a JSON response

@@ -48,7 +48,7 @@ func main() {
 	}
 
 	// Initialize stores
-	sessionStore := store.NewSessionStore()
+	sessionStore := newSessionRepository(cfg)
 	fileStore := store.NewFileStore(cfg.UploadDir)
 
 	// Initialize agent manager
@@ -90,4 +90,15 @@ func main() {
 	}
 
 	log.Println("Server stopped")
+}
+
+// newSessionRepository persists conversations in Supabase when it is fully
+// configured, and otherwise keeps them in memory (lost on restart).
+func newSessionRepository(cfg *config.Config) store.SessionRepository {
+	if cfg.SupabaseURL != "" && cfg.SupabasePublishableKey != "" && !cfg.AuthDisabled {
+		log.Printf("Conversations are persisted in Supabase Postgres")
+		return store.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabasePublishableKey, auth.Token)
+	}
+	log.Printf("WARNING: conversations are kept in memory and lost on restart (set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY to persist them)")
+	return store.NewSessionStore()
 }

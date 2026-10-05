@@ -25,7 +25,10 @@ type Config struct {
 	// Authentication (Supabase)
 	SupabaseURL       string // https://<project>.supabase.co
 	SupabaseJWTSecret string // legacy HS256 secret; optional when the project uses JWKS
-	AuthDisabled      bool   // local development only
+	// Publishable (or legacy anon) key. With SUPABASE_URL it switches
+	// conversations from memory to Supabase Postgres. Public by design.
+	SupabasePublishableKey string
+	AuthDisabled           bool // local development only
 }
 
 // Load reads configuration from environment variables
@@ -50,9 +53,10 @@ func Load() (*Config, error) {
 		MaxUploadSize: 20 * 1024 * 1024, // 20MB
 		FrontendURL:   getEnvOrDefault("FRONTEND_URL", "http://localhost:5173"),
 
-		SupabaseURL:       os.Getenv("SUPABASE_URL"),
-		SupabaseJWTSecret: os.Getenv("SUPABASE_JWT_SECRET"),
-		AuthDisabled:      os.Getenv("AUTH_DISABLED") == "true",
+		SupabaseURL:            os.Getenv("SUPABASE_URL"),
+		SupabaseJWTSecret:      os.Getenv("SUPABASE_JWT_SECRET"),
+		SupabasePublishableKey: getEnvOrDefault("SUPABASE_PUBLISHABLE_KEY", os.Getenv("SUPABASE_ANON_KEY")),
+		AuthDisabled:           os.Getenv("AUTH_DISABLED") == "true",
 	}
 
 	// Ensure upload directory exists

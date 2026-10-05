@@ -31,8 +31,16 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.Module == "" {
 		module = store.ModuleConsult
 	}
+	if !module.Valid() {
+		writeError(w, http.StatusBadRequest, "Unknown module")
+		return
+	}
 
-	session := s.sessionStore.Create(userID, module, req.Title)
+	session, err := s.sessionStore.Create(r.Context(), userID, module, req.Title)
+	if err != nil {
+		writeStoreError(w, err, "create session")
+		return
+	}
 	writeJSON(w, http.StatusCreated, session)
 }
 
@@ -42,7 +50,11 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sessions := s.sessionStore.List(userID)
+	sessions, err := s.sessionStore.List(r.Context(), userID)
+	if err != nil {
+		writeStoreError(w, err, "list sessions")
+		return
+	}
 
 	// Return summary without full messages
 	type SessionSummary struct {
@@ -83,9 +95,9 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := s.sessionStore.Get(userID, id)
+	session, err := s.sessionStore.Get(r.Context(), userID, id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "Session not found")
+		writeStoreError(w, err, "get session")
 		return
 	}
 
@@ -104,8 +116,8 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.sessionStore.Delete(userID, id); err != nil {
-		writeError(w, http.StatusNotFound, "Session not found")
+	if err := s.sessionStore.Delete(r.Context(), userID, id); err != nil {
+		writeStoreError(w, err, "delete session")
 		return
 	}
 
