@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -175,5 +176,92 @@ func TestLongHistoryIsTrimmedBeforeTheModel(t *testing.T) {
 	// ...but the stored conversation is untouched.
 	if h := e.history(t, "alice", sid); len(h) != 6 {
 		t.Errorf("history rows = %d, want 6", len(h))
+	}
+}
+
+// ---- documents stay in context for the whole conversation -------------------
+
+func TestDocumentStaysInContextOnFollowUps(t *testing.T) {
+	e := newTestEnv(t)
+	alice := token(t, "alice")
+	up := e.upload(t, alice, "contract.docx", fixture(t, "contract.docx"))
+	sid := e.createSessionFor(t, alice, "contract")
+
+	for i, body := range []map[string]any{
+		{"session_id": sid, "message": "审查", "file_ids": []string{up.FileID}},
+		{"session_id": sid, "message": "你直接改好了吗"}, // no file attached this turn
+	} {
+		if rec := e.chat(t, alice, body); rec.Code != http.StatusOK {
+			t.Fatalf("turn %d: %d %s", i, rec.Code, rec.Body)
+		}
+	}
+	e.llm.mu.Lock()
+	defer e.llm.mu.Unlock()
+	followUp := e.llm.seen[1]
+	hits := 0
+	for _, m := range followUp {
+		if strings.Contains(m.Content, "违约金人民币十万元") {
+			hits++
+			if m.Role != "user" {
+				t.Errorf("document role %q", m.Role)
+			}
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("follow-up request carried the document %d times, want exactly once", hits)
+	}
+	if last := followUp[len(followUp)-1]; last.Content != "你直接改好了吗" {
+		t.Errorf("the question must stay last, got %q", last.Content)
+	}
+}
+
+func TestEarlierUnreadableFileDoesNotBlockFollowUps(t *testing.T) {
+	e := newTestEnv(t)
+	alice := token(t, "alice")
+	up := e.upload(t, alice, "a.txt", []byte("第一份文件"))
+	sid := e.createSessionFor(t, alice, "contract")
+	if rec := e.chat(t, alice, map[string]any{"session_id": sid, "message": "看", "file_ids": []string{up.FileID}}); rec.Code != http.StatusOK {
+		t.Fatal(rec.Body)
+	}
+	if err := e.files.Delete(context.Background(), "alice", up.FileID); err != nil {
+		t.Fatal(err)
+	}
+	if rec := e.chat(t, alice, map[string]any{"session_id": sid, "message": "继续"}); rec.Code != http.StatusOK {
+		t.Fatalf("a follow-up must not fail because an earlier file is gone: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestSeveralDocumentsAreAllSentOldestFirst(t *testing.T) {
+	e := newTestEnv(t)
+	alice := token(t, "alice")
+	a := e.upload(t, alice, "a.txt", []byte("甲文件内容"))
+	b := e.upload(t, alice, "b.txt", []byte("乙文件内容"))
+	sid := e.createSessionFor(t, alice, "contract")
+	e.chat(t, alice, map[string]any{"session_id": sid, "message": "1", "file_ids": []string{a.FileID}})
+	e.chat(t, alice, map[string]any{"session_id": sid, "message": "2", "file_ids": []string{b.FileID}})
+	e.llm.mu.Lock()
+	defer e.llm.mu.Unlock()
+	var doc string
+	for _, m := range e.llm.seen[1] {
+		if strings.Contains(m.Content, "<document") {
+			doc = m.Content
+		}
+	}
+	ia, ib := strings.Index(doc, "甲文件内容"), strings.Index(doc, "乙文件内容")
+	if ia < 0 || ib < 0 || ia > ib {
+		t.Errorf("both documents expected, oldest first: %q", doc)
+	}
+}
+
+func TestLimitDocuments(t *testing.T) {
+	docs := []string{"aaaa", "bbbb", "cc"}
+	if got := strings.Join(limitDocuments(docs, 0), ","); got != "aaaa,bbbb,cc" {
+		t.Errorf("no limit: %s", got)
+	}
+	if got := strings.Join(limitDocuments(docs, 6), ","); got != "bbbb,cc" {
+		t.Errorf("newest that fit: %s", got)
+	}
+	if got := strings.Join(limitDocuments([]string{"aaaa", "bbbbbbbb"}, 5), ","); got != "bbbbb" {
+		t.Errorf("the newest document is always kept, cut to fit: %s", got)
 	}
 }

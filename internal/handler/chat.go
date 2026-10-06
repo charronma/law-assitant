@@ -130,15 +130,24 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	messages := append(buildSchemaMessages(session.Messages, s.cfg.MaxHistoryChars), schema.UserMessage(req.Message))
 
-	// Attach uploaded documents (any module). They go in as a delimited user
-	// message, not a system message: the text is untrusted data.
+	// Attach the conversation's documents (any module). A document stays in
+	// context for the whole conversation, not just the turn that uploaded it:
+	// follow-ups like "now rewrite it" must still see the text. Documents go in
+	// as one delimited user message, never a system message: they are untrusted data.
+	var docs []string
 	if len(req.FileIDs) > 0 {
-		docs := s.getFileContents(r.Context(), userID, req.FileIDs)
+		docs = s.getFileContents(r.Context(), userID, req.FileIDs)
 		if len(docs) == 0 {
 			writeUploadError(w, http.StatusUnprocessableEntity, codeFileUnavailable,
 				"上传的文件已失效或无法读取，请重新上传后再发送")
 			return
 		}
+	}
+	// Earlier files that can no longer be read are skipped: the user is only
+	// told when the file they just attached is unusable.
+	earlier := documentIDs(session.Messages, req.FileIDs)
+	docs = append(s.getFileContents(r.Context(), userID, earlier), docs...)
+	if docs = limitDocuments(docs, s.cfg.MaxDocumentChars); len(docs) > 0 {
 		last := len(messages) - 1
 		messages = append(messages[:last:last], documentMessage(docs), messages[last])
 	}
@@ -303,6 +312,52 @@ func sendSSEEvent(w http.ResponseWriter, flusher http.Flusher, event SSEEvent) {
 	}
 	fmt.Fprintf(w, "event: message\ndata: %s\n\n", string(data))
 	flusher.Flush()
+}
+
+// documentIDs lists the files attached to earlier user messages (oldest first,
+// no duplicates), leaving out the ids in exclude (the current message's files).
+func documentIDs(history []store.Message, exclude []string) []string {
+	var ids []string
+	seen := map[string]bool{}
+	for _, id := range exclude {
+		seen[id] = true
+	}
+	add := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for _, m := range history {
+		if m.Role == "user" {
+			for _, id := range m.FileIDs {
+				add(id)
+			}
+		}
+	}
+	return ids
+}
+
+// limitDocuments keeps the newest documents that fit in maxChars (0 = no limit),
+// preserving their order. The newest document is always kept, cut to fit.
+func limitDocuments(docs []string, maxChars int) []string {
+	if maxChars <= 0 {
+		return docs
+	}
+	used, start := 0, len(docs)
+	for start > 0 {
+		n := utf8.RuneCountInString(docs[start-1])
+		if used+n > maxChars {
+			break
+		}
+		used += n
+		start--
+	}
+	kept := docs[start:]
+	if len(kept) == 0 && len(docs) > 0 {
+		kept = []string{string([]rune(docs[len(docs)-1])[:maxChars])}
+	}
+	return kept
 }
 
 // documentMessage wraps extracted document text as a user message that marks

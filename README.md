@@ -206,6 +206,7 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 | UPLOAD_RATE_PER_MINUTE | 否 | 10 | 每用户每分钟上传次数（0=不限） |
 | MAX_CONCURRENT_CHATS | 否 | 2 | 每用户同时生成的回答数（0=不限）；超出返回 429 `TOO_MANY_STREAMS` |
 | MAX_MESSAGE_CHARS | 否 | 8000 | 单条消息最大字符数；超出返回 413 `MESSAGE_TOO_LONG` |
+| MAX_DOCUMENT_CHARS | 否 | 200000 | 每次请求发给模型的上传文档文本总字符数（保留最新的；文档在整个对话中都会随请求发送） |
 | MAX_HISTORY_CHARS | 否 | 30000 | 发送给模型的历史对话字符预算（只保留最近的整轮消息，数据库里的记录不受影响） |
 | FRONTEND_URL | 否 | http://localhost:5173 | 前端地址（CORS） |
 | SUPABASE_URL | 是* | - | Supabase 项目地址，用于获取 JWKS 校验 JWT |

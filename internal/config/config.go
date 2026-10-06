@@ -34,6 +34,7 @@ type Config struct {
 	MaxConcurrentChats int // simultaneous chat streams per user
 	MaxMessageChars    int // longest single user message, in characters
 	MaxHistoryChars    int // conversation history sent to the model, in characters
+	MaxDocumentChars   int // uploaded document text sent to the model per request, in characters
 
 	// Frontend
 	FrontendURL string
@@ -85,6 +86,7 @@ func Load() (*Config, error) {
 		MaxConcurrentChats: envInt("MAX_CONCURRENT_CHATS", 2),
 		MaxMessageChars:    envInt("MAX_MESSAGE_CHARS", 8000),
 		MaxHistoryChars:    envInt("MAX_HISTORY_CHARS", 30000),
+		MaxDocumentChars:   envInt("MAX_DOCUMENT_CHARS", 200000),
 
 		SupabaseURL:            os.Getenv("SUPABASE_URL"),
 		SupabaseJWTSecret:      os.Getenv("SUPABASE_JWT_SECRET"),
