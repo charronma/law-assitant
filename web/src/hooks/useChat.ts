@@ -8,6 +8,8 @@ interface UseChatOptions {
   /** Model for new requests; omit to let the server use its default. */
   model?: string;
   onSessionCreated?: (sessionId: string) => void;
+  /** A reply finished (even if the user has since left that conversation): titles and ordering changed server-side. */
+  onTurnFinished?: () => void;
   /** Called for every failed request (e.g. to remember which models ran out of quota). */
   onError?: (err: ChatError) => void;
 }
@@ -19,7 +21,7 @@ interface SendOptions {
   retry?: boolean;
 }
 
-export function useChat({ module, sessionId, model, onSessionCreated, onError }: UseChatOptions) {
+export function useChat({ module, sessionId, model, onSessionCreated, onTurnFinished, onError }: UseChatOptions) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingContent, setStreamingContent] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -35,6 +37,27 @@ export function useChat({ module, sessionId, model, onSessionCreated, onError }:
   /** A session this hook created itself: its messages are already on screen, so don't reload (and wipe) them. */
   const ownSessionRef = useRef<string | null>(null);
   const onErrorRef = useRef(onError);
+  const onTurnFinishedRef = useRef(onTurnFinished);
+  /**
+   * Bumped every time the user navigates to another conversation. A request is
+   * bound to the epoch it started in: once the epoch moves on, its callbacks
+   * no longer touch the UI (the server still finishes and saves the reply, so
+   * it is there when the user comes back).
+   */
+  const epochRef = useRef(0);
+  /** Guards loadSession against out-of-order responses when switching quickly. */
+  const loadSeqRef = useRef(0);
+
+  /** Leave the current conversation: drop any in-flight stream from the UI and free the composer. */
+  const detach = useCallback(() => {
+    epochRef.current += 1;
+    requestInFlightRef.current = false;
+    doneHandledRef.current = true;
+    streamingContentRef.current = '';
+    setStreamingContent('');
+    setIsStreaming(false);
+    setError(null);
+  }, []);
 
   // Keep refs in sync (refs must not be written during render)
   useEffect(() => {
@@ -43,6 +66,9 @@ export function useChat({ module, sessionId, model, onSessionCreated, onError }:
   useEffect(() => {
     onErrorRef.current = onError;
   }, [onError]);
+  useEffect(() => {
+    onTurnFinishedRef.current = onTurnFinished;
+  }, [onTurnFinished]);
 
   const loadSession = useCallback(async (id: string) => {
     // The server may not have persisted the in-flight message yet (it is saved
@@ -50,19 +76,26 @@ export function useChat({ module, sessionId, model, onSessionCreated, onError }:
     if (ownSessionRef.current === id) return;
     ownSessionRef.current = null;
     lastRequestRef.current = null;
+    detach();
+    const seq = ++loadSeqRef.current;
     try {
       const session = await getSession(id);
+      if (seq !== loadSeqRef.current) return; // the user already moved on
       setMessages(session.messages || []);
-      setError(null);
     } catch {
+      if (seq !== loadSeqRef.current) return;
       setError({ message: 'Failed to load session' });
     }
-  }, []);
+  }, [detach]);
 
   const sendMessage = useCallback(async (content: string, fileIds?: string[], opts?: SendOptions) => {
     if (!content.trim()) return;
     if (requestInFlightRef.current) return;
     requestInFlightRef.current = true;
+
+    const epoch = epochRef.current;
+    /** True while the user is still looking at the conversation this request belongs to. */
+    const attached = () => epochRef.current === epoch;
 
     const requestModel = opts?.model ?? model;
     const isRetry = opts?.retry === true;
@@ -93,13 +126,18 @@ export function useChat({ module, sessionId, model, onSessionCreated, onError }:
       try {
         const session = await createSession(module);
         sid = session.id;
-        currentSessionRef.current = sid;
-        ownSessionRef.current = sid;
-        onSessionCreated?.(sid);
+        // Only adopt the new conversation if the user is still in this "new chat".
+        if (attached()) {
+          currentSessionRef.current = sid;
+          ownSessionRef.current = sid;
+          onSessionCreated?.(sid);
+        }
       } catch {
-        setError({ message: 'Failed to create session' });
-        setIsStreaming(false);
-        requestInFlightRef.current = false;
+        if (attached()) {
+          setError({ message: 'Failed to create session' });
+          setIsStreaming(false);
+          requestInFlightRef.current = false;
+        }
         return;
       }
     }
@@ -114,6 +152,7 @@ export function useChat({ module, sessionId, model, onSessionCreated, onError }:
       },
       // onToken
       (token) => {
+        if (!attached()) return;
         // Update the ref synchronously: a setState updater runs lazily, so when the
         // last tokens and "done" arrive in the same tick onDone would read a stale ref
         // and the saved answer would lose its tail.
@@ -122,7 +161,8 @@ export function useChat({ module, sessionId, model, onSessionCreated, onError }:
       },
       // onDone - 只处理一次，避免 Strict Mode 或重复 SSE 导致回答出现两遍
       (messageId) => {
-        if (doneHandledRef.current) return;
+        onTurnFinishedRef.current?.();
+        if (!attached() || doneHandledRef.current) return;
         doneHandledRef.current = true;
         requestInFlightRef.current = false;
 
@@ -143,16 +183,18 @@ export function useChat({ module, sessionId, model, onSessionCreated, onError }:
       },
       // onError
       (err) => {
+        // A model that ran out of quota is worth remembering wherever the user is now.
+        onErrorRef.current?.(err);
+        if (!attached()) return;
         requestInFlightRef.current = false;
         setError(err);
-        onErrorRef.current?.(err);
         setIsStreaming(false);
         streamingContentRef.current = '';
         setStreamingContent('');
       },
       // onSessionId
       (newSid) => {
-        if (!currentSessionRef.current) {
+        if (attached() && !currentSessionRef.current) {
           currentSessionRef.current = newSid;
           ownSessionRef.current = newSid;
           onSessionCreated?.(newSid);
@@ -197,10 +239,10 @@ export function useChat({ module, sessionId, model, onSessionCreated, onError }:
   const clearMessages = useCallback(() => {
     ownSessionRef.current = null;
     lastRequestRef.current = null;
+    loadSeqRef.current += 1; // a session load still in flight must not repopulate the new chat
+    detach();
     setMessages([]);
-    setStreamingContent('');
-    setError(null);
-  }, []);
+  }, [detach]);
 
   return {
     messages,

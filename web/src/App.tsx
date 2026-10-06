@@ -28,6 +28,8 @@ function App() {
     setSidebarOpen(false);
   }, []);
 
+  const handleTurnFinished = useCallback(() => setRefreshKey(k => k + 1), []);
+
   const handleSessionCreated = useCallback((sessionId: string) => {
     setCurrentSessionId(sessionId);
     setRefreshKey(k => k + 1);
@@ -50,6 +52,7 @@ function App() {
         sessionId={currentSessionId}
         onSessionCreated={handleSessionCreated}
         onNewChat={handleNewChat}
+        onTurnFinished={handleTurnFinished}
         onOpenSidebar={() => setSidebarOpen(true)}
       />
     </div>
