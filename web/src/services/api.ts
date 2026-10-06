@@ -1,4 +1,4 @@
-import type { ChatError, ChatRequest, ModelList, Session, SSEEvent, UploadedFile } from '../types';
+import type { ChatError, ChatRequest, FileInfo, ModelList, RedlineResult, Session, SSEEvent, UploadedFile } from '../types';
 
 import { supabase } from '../lib/supabase';
 
@@ -71,6 +71,41 @@ export async function uploadFile(file: File, sessionId?: string): Promise<Upload
     // The server explains why it rejected the file (unreadable, scanned, .doc, too large...).
     const body: unknown = await res.json().catch(() => null);
     throw new Error(toChatError(body, `文件上传失败（HTTP ${res.status}）`).message);
+  }
+  return res.json();
+}
+
+/** An API failure carrying the server's {code, model, message}. */
+export class ApiError extends Error {
+  code?: string;
+  model?: string;
+  constructor(err: ChatError) {
+    super(err.message);
+    this.code = err.code;
+    this.model = err.model;
+  }
+}
+
+/** Metadata of one of the user's uploads. */
+export async function getFileInfo(id: string): Promise<FileInfo> {
+  const res = await apiFetch(`/files/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Ask the model to review an uploaded .docx and return it with the proposed changes
+ * applied as tracked changes and comments. Takes a minute or so.
+ */
+export async function createRedline(fileId: string, instruction: string, model?: string): Promise<RedlineResult> {
+  const res = await apiFetch('/redline', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId, instruction, model: model || undefined }),
+  });
+  if (!res.ok) {
+    const body: unknown = await res.json().catch(() => null);
+    throw new ApiError(toChatError(body, `生成失败（HTTP ${res.status}）`));
   }
   return res.json();
 }

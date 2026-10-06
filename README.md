@@ -183,6 +183,8 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 |------|------|------|
 | GET | /api/models | 可选模型列表与默认模型：`{"models":[{"id","label","tier"}],"default":"..."}` |
 | POST | /api/chat | 发送消息（SSE 流式响应）。可选字段 `model`，缺省使用默认模型，不在白名单内返回 400 `INVALID_MODEL` |
+| POST | /api/redline | 对已上传的 .docx 生成**带修订痕迹和批注的修订版**：`{file_id, instruction, model?}` → `{filename, docx_base64, summary, applied[], skipped[]}`。模型给出结构化修改清单，后端把它写进原文件的 `w:ins/w:del` 和批注，保留原格式与已有修订；每个段落写入后会校验“接受修订=预期文本、拒绝修订=原文”，校验不过的修改会被跳过并列在 `skipped` 里，不会产出损坏的文件。非 .docx 返回 422 `NOT_DOCX` |
+| GET | /api/files/{id} | 已上传文件的元数据（文件名、大小、字数） |
 | POST | /api/export/docx | 把一条回复（Markdown）导出为 Word：`{title?, content}` → `.docx`（标题/列表/表格/加粗/引用，末尾附免责声明） |
 | POST | /api/upload | 上传文件（.docx/.pdf/.txt/.md）。成功返回 `chars`/`preview`/`truncated`；无法提取文字时返回 422 `{code,message}`（`NO_TEXT`/`UNSUPPORTED_FORMAT`/`EXTRACT_FAILED`/`FILE_TOO_LARGE`） |
 | POST | /api/sessions | 创建会话 |

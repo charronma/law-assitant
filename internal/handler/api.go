@@ -53,6 +53,8 @@ func (s *Server) SetupRoutes() http.Handler {
 	mux.HandleFunc("POST /api/chat", s.handleChat)
 	mux.HandleFunc("POST /api/upload", s.handleUpload)
 	mux.HandleFunc("POST /api/export/docx", s.handleExportDocx)
+	mux.HandleFunc("POST /api/redline", s.handleRedline)
+	mux.HandleFunc("GET /api/files/{id}", s.handleGetFile)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)

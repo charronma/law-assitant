@@ -113,6 +113,58 @@ func (s *SupabaseFileStore) Get(ctx context.Context, userID, id string) (*Upload
 	return rows[0].file(userID), nil
 }
 
+// maxObjectBytes bounds what Open will read back (the upload limit is 20 MB).
+const maxObjectBytes = 25 << 20
+
+// Open downloads the stored original.
+func (s *SupabaseFileStore) Open(ctx context.Context, userID, id string) (io.ReadCloser, error) {
+	if !validUUIDs(userID, id) {
+		return nil, fmt.Errorf("%w: %s", ErrFileNotFound, id)
+	}
+	q := url.Values{}
+	q.Set("id", "eq."+id)
+	q.Set("user_id", "eq."+userID)
+	q.Set("select", "storage_path")
+	var rows []fileRow
+	if err := s.rows.do(ctx, http.MethodGet, "uploaded_files", q, nil, "", &rows); err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 || rows[0].StoragePath == "" {
+		return nil, fmt.Errorf("%w: %s", ErrFileNotFound, id)
+	}
+	tok, ok := s.token(ctx)
+	if !ok {
+		return nil, fmt.Errorf("%w: no access token on the request", ErrUnauthorized)
+	}
+	// Private buckets are read through the "authenticated" route with the user's token.
+	u := strings.Replace(s.objectURL(rows[0].StoragePath), "/object/"+uploadsBucket+"/", "/object/authenticated/"+uploadsBucket+"/", 1)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("apikey", s.apiKey)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("storage request failed: %w", err)
+	}
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		switch resp.StatusCode {
+		case http.StatusNotFound:
+			return nil, fmt.Errorf("%w: %s", ErrFileNotFound, id)
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return nil, fmt.Errorf("%w: storage %d: %s", ErrUnauthorized, resp.StatusCode, raw)
+		}
+		return nil, fmt.Errorf("storage %d: %s", resp.StatusCode, raw)
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{io.LimitReader(resp.Body, maxObjectBytes), resp.Body}, nil
+}
+
 // Delete removes the row and the stored object.
 func (s *SupabaseFileStore) Delete(ctx context.Context, userID, id string) error {
 	if !validUUIDs(userID, id) {

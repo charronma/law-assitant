@@ -209,5 +209,5 @@ func soak() int64 {
 			return int64(n)
 		}
 	}
-	return 1500
+	return 500
 }
