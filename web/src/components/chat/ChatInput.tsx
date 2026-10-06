@@ -77,7 +77,7 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
   };
 
   return (
-    <div className="border-t border-gray-200 bg-white p-4">
+    <div className="border-t border-gray-200 bg-white p-3 md:p-4 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
       {uploadError && (
         <div
           role="alert"

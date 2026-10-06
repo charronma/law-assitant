@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   MessageSquare, FileText, FileCheck, FolderOpen, Search, Users,
-  Plus, Trash2, Scale, LogOut,
+  Plus, Trash2, Scale, LogOut, X,
 } from 'lucide-react';
 import type { ModuleType, Session } from '../../types';
 import { listSessions, deleteSession } from '../../services/api';
@@ -23,6 +23,9 @@ interface SidebarProps {
   onSessionSelect: (session: Session) => void;
   onNewChat: () => void;
   refreshKey: number;
+  /** Mobile drawer state; ignored from the md breakpoint up. */
+  open: boolean;
+  onClose: () => void;
 }
 
 export default function Sidebar({
@@ -32,6 +35,8 @@ export default function Sidebar({
   onSessionSelect,
   onNewChat,
   refreshKey,
+  open,
+  onClose,
 }: SidebarProps) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const { user, signOut } = useAuth();
@@ -51,12 +56,34 @@ export default function Sidebar({
   const moduleSessions = sessions.filter(s => s.module === currentModule);
 
   return (
-    <div className="w-64 bg-gray-900 text-white flex flex-col h-full">
+    <>
+      {/* Backdrop (mobile only) */}
+      {open && (
+        <div
+          data-testid="sidebar-backdrop"
+          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+          onClick={onClose}
+          aria-hidden="true"
+        />
+      )}
+    <aside
+      aria-label="导航"
+      className={`fixed inset-y-0 left-0 z-40 w-64 max-w-[85vw] bg-gray-900 text-white flex flex-col h-full transition-transform duration-200 md:static md:z-auto md:max-w-none md:translate-x-0 ${
+        open ? 'translate-x-0' : '-translate-x-full'
+      }`}
+    >
       {/* Logo */}
       <div className="p-4 border-b border-gray-700">
         <div className="flex items-center gap-2">
           <Scale size={24} className="text-indigo-400" />
           <h1 className="text-lg font-bold">AI 法律助手</h1>
+          <button
+            onClick={onClose}
+            aria-label="关闭菜单"
+            className="ml-auto p-1 text-gray-400 hover:text-white md:hidden"
+          >
+            <X size={20} />
+          </button>
         </div>
       </div>
 
@@ -112,7 +139,7 @@ export default function Sidebar({
                 <span className="truncate flex-1 text-left">{session.title}</span>
                 <Trash2
                   size={14}
-                  className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 transition-opacity shrink-0 ml-2"
+                  className="opacity-100 md:opacity-0 md:group-hover:opacity-100 text-gray-500 hover:text-red-400 transition-opacity shrink-0 ml-2"
                   onClick={(e) => handleDelete(e, session.id)}
                 />
               </button>
@@ -133,6 +160,7 @@ export default function Sidebar({
           <span>退出</span>
         </button>
       </div>
-    </div>
+    </aside>
+    </>
   );
 }

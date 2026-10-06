@@ -82,3 +82,8 @@ body {
   animation: blink 1s infinite;
   color: #6366f1;
 }
+
+/* Wide content scrolls inside the message instead of stretching the page (mobile). */
+.markdown-content { overflow-wrap: anywhere; }
+.markdown-content pre,
+.markdown-content table { display: block; max-width: 100%; overflow-x: auto; }
