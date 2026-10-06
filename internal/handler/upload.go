@@ -3,10 +3,15 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
+	"law-assistant/internal/store"
 	"law-assistant/internal/tool"
 )
 
@@ -88,26 +93,50 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := r.FormValue("session_id")
 
-	// Save file
-	uploadedFile, err := s.fileStore.Save(userID, sessionID, header.Filename, header.Header.Get("Content-Type"), header.Size, file)
+	// The parser works on a path, so spool the upload to a private temp file.
+	tmp, err := os.CreateTemp("", "upload-*"+strings.ToLower(filepath.Ext(header.Filename)))
 	if err != nil {
-		log.Printf("Failed to save uploaded file: %v", err)
+		log.Printf("Failed to create temp file: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to save file")
+		return
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	if _, err := io.Copy(tmp, file); err != nil {
+		log.Printf("Failed to spool upload: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to save file")
 		return
 	}
 
-	res, err := s.docParser.Parse(uploadedFile.StoragePath)
+	// Parse first: a document the model cannot read is rejected before anything is stored.
+	res, err := s.docParser.Parse(tmp.Name())
 	if err != nil {
-		log.Printf("Failed to parse uploaded file %s: %v", uploadedFile.Filename, err)
-		if derr := s.fileStore.Delete(userID, uploadedFile.ID); derr != nil {
-			log.Printf("Failed to remove rejected upload %s: %v", uploadedFile.ID, derr)
-		}
+		log.Printf("Failed to parse uploaded file %s: %v", header.Filename, err)
 		status, code, msg := extractionFailure(err)
 		writeUploadError(w, status, code, msg)
 		return
 	}
-	if err := s.fileStore.SetExtractedText(userID, uploadedFile.ID, res.Text); err != nil {
-		log.Printf("Failed to cache extracted text: %v", err)
+
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to save file")
+		return
+	}
+	uploadedFile, err := s.fileStore.Create(r.Context(), userID, store.NewFile{
+		SessionID:   sessionID,
+		Filename:    header.Filename,
+		ContentType: header.Header.Get("Content-Type"),
+		Size:        header.Size,
+		Text:        res.Text,
+		Content:     tmp,
+	})
+	if err != nil {
+		log.Printf("Failed to store uploaded file: %v", err)
+		if errors.Is(err, store.ErrUnauthorized) {
+			writeError(w, http.StatusUnauthorized, "Unauthorized")
+		} else {
+			writeError(w, http.StatusInternalServerError, "Failed to save file")
+		}
+		return
 	}
 
 	runes := []rune(res.Text)

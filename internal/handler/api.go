@@ -20,7 +20,7 @@ type Server struct {
 	cfg          *config.Config
 	agentManager *agent.AgentManager
 	sessionStore store.SessionRepository
-	fileStore    *store.FileStore
+	fileStore    store.FileRepository
 	docParser    *tool.DocumentParser
 	auth         *auth.Authenticator
 	models       *model.Registry
@@ -30,7 +30,7 @@ type Server struct {
 }
 
 // NewServer creates a new server with all dependencies
-func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore store.SessionRepository, fileStore *store.FileStore, authn *auth.Authenticator, models *model.Registry) *Server {
+func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore store.SessionRepository, fileStore store.FileRepository, authn *auth.Authenticator, models *model.Registry) *Server {
 	return &Server{
 		cfg:          cfg,
 		agentManager: agentMgr,

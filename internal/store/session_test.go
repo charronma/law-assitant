@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -163,30 +162,6 @@ func TestModuleValid(t *testing.T) {
 		if m.Valid() {
 			t.Errorf("%q should be invalid", m)
 		}
-	}
-}
-
-func TestFileStore_UserIsolation(t *testing.T) {
-	fs := NewFileStore(t.TempDir())
-	f, err := fs.Save("alice", "", "contract.txt", "text/plain", 5, strings.NewReader("hello"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := fs.Get("alice", f.ID); err != nil {
-		t.Errorf("owner Get: %v", err)
-	}
-	if _, err := fs.Get("bob", f.ID); !errors.Is(err, ErrFileNotFound) {
-		t.Errorf("Get by other user: got %v, want ErrFileNotFound", err)
-	}
-	if err := fs.SetExtractedText("bob", f.ID, "tampered"); !errors.Is(err, ErrFileNotFound) {
-		t.Errorf("SetExtractedText by other user: got %v, want ErrFileNotFound", err)
-	}
-	if err := fs.SetExtractedText("alice", f.ID, "ok"); err != nil {
-		t.Errorf("owner SetExtractedText: %v", err)
-	}
-	if got, _ := fs.Get("alice", f.ID); got.ExtractedText != "ok" {
-		t.Errorf("ExtractedText = %q, want %q", got.ExtractedText, "ok")
 	}
 }
 

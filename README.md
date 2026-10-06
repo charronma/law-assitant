@@ -173,7 +173,7 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 - 消息只能写入属于自己的会话；`anon`（未登录）角色没有任何权限；`user_id` 不可被修改。
 - 每条消息记录本轮使用的模型 id（`chat_messages.model`，迁移 `20261005000000_chat_message_model.sql`）。
 - 触发器会在新增消息时更新会话的 `updated_at`，并用首条用户消息的前 20 个字符生成标题。
-- 上传的文件目前仍在本地磁盘（`UPLOAD_DIR`），不在数据库里。
+- 配置了 Supabase 时，上传文件存入私有 Storage bucket `uploads`（路径 `<user_id>/<file_id>.<ext>`），元数据和提取文本存 `public.uploaded_files`（RLS，同样使用用户自己的 JWT），重启/换实例后仍可引用；未配置时退回本地磁盘 + 内存（重启即失效）。需要先应用 `supabase/migrations/20261006000000_uploaded_files.sql`。删除会话不会删除已上传的文件。
 
 ## API 接口
 

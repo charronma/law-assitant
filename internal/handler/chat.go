@@ -133,7 +133,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// Attach uploaded documents (any module). They go in as a delimited user
 	// message, not a system message: the text is untrusted data.
 	if len(req.FileIDs) > 0 {
-		docs := s.getFileContents(userID, req.FileIDs)
+		docs := s.getFileContents(r.Context(), userID, req.FileIDs)
 		if len(docs) == 0 {
 			writeUploadError(w, http.StatusUnprocessableEntity, codeFileUnavailable,
 				"上传的文件已失效或无法读取，请重新上传后再发送")
@@ -317,26 +317,22 @@ func documentMessage(docs []string) *schema.Message {
 }
 
 // getFileContents returns the extracted text of each of the user's files.
-// IDs that do not exist, belong to someone else or cannot be parsed are
-// skipped; the caller decides what to do when nothing is left.
-func (s *Server) getFileContents(userID string, fileIDs []string) []string {
+// IDs that do not exist or belong to someone else are skipped; the caller
+// decides what to do when nothing is left. Other failures are logged and the
+// file is skipped as well, so the user is told to re-upload.
+func (s *Server) getFileContents(ctx context.Context, userID string, fileIDs []string) []string {
 	var contents []string
 	for _, fileID := range fileIDs {
-		file, err := s.fileStore.Get(userID, fileID)
+		file, err := s.fileStore.Get(ctx, userID, fileID)
 		if err != nil {
+			if !errors.Is(err, store.ErrFileNotFound) {
+				log.Printf("Failed to load file %s: %v", fileID, err)
+			}
 			continue
 		}
 		if file.ExtractedText != "" {
 			contents = append(contents, file.ExtractedText)
-			continue
 		}
-		res, err := s.docParser.Parse(file.StoragePath)
-		if err != nil {
-			log.Printf("Failed to parse file %s: %v", fileID, err)
-			continue
-		}
-		s.fileStore.SetExtractedText(userID, fileID, res.Text)
-		contents = append(contents, res.Text)
 	}
 	return contents
 }

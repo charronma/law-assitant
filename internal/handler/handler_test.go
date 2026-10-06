@@ -218,10 +218,10 @@ func TestUploadedFilesAreOwnedByUploader(t *testing.T) {
 		t.Fatalf("bad upload response: %v %s", err, rec.Body)
 	}
 
-	if got := strings.Join(e.srv.getFileContents("alice", []string{up.FileID}), ""); !strings.Contains(got, "保密条款") {
+	if got := strings.Join(e.srv.getFileContents(context.Background(), "alice", []string{up.FileID}), ""); !strings.Contains(got, "保密条款") {
 		t.Errorf("owner should read own file, got %q", got)
 	}
-	if got := strings.Join(e.srv.getFileContents("bob", []string{up.FileID}), ""); strings.Contains(got, "保密条款") {
+	if got := strings.Join(e.srv.getFileContents(context.Background(), "bob", []string{up.FileID}), ""); strings.Contains(got, "保密条款") {
 		t.Errorf("another user read alice's file: %q", got)
 	}
 }
