@@ -80,10 +80,10 @@ export interface UploadedFile {
   filename: string;
   size: number;
   content_type: string;
-  /** Characters the server extracted from the document. */
-  chars: number;
+  /** Characters the server extracted (absent on servers older than the parsing fix). */
+  chars?: number;
   /** First characters of the extracted text. */
-  preview: string;
+  preview?: string;
   /** The text was cut at the server's limit. */
-  truncated: boolean;
+  truncated?: boolean;
 }

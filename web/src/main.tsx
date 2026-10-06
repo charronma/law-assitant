@@ -4,13 +4,16 @@ import './index.css'
 import App from './App'
 import AuthProvider from './auth/AuthProvider'
 import AuthGate from './auth/AuthGate'
+import ErrorBoundary from './components/ErrorBoundary'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <AuthProvider>
-      <AuthGate>
-        <App />
-      </AuthGate>
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <AuthGate>
+          <App />
+        </AuthGate>
+      </AuthProvider>
+    </ErrorBoundary>
   </StrictMode>,
 )
