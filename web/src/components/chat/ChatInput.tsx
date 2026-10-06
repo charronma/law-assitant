@@ -18,7 +18,7 @@ const MAX_MESSAGE_CHARS = 8000;
 
 export default function ChatInput({ onSend, onStop, isStreaming, module, sessionId }: ChatInputProps) {
   const [input, setInput] = useState('');
-  const [uploadedFiles, setUploadedFiles] = useState<{ id: string; name: string; chars: number; truncated: boolean }[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<{ id: string; name: string; chars?: number; truncated: boolean }[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -54,7 +54,7 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
       const result = await uploadFile(file, sessionId || undefined);
       setUploadedFiles(prev => [
         ...prev,
-        { id: result.file_id, name: result.filename, chars: result.chars, truncated: result.truncated },
+        { id: result.file_id, name: result.filename, chars: result.chars, truncated: result.truncated === true },
       ]);
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : '文件上传失败，请重试');
@@ -102,7 +102,8 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
             >
               📎 {f.name}
               <span className={f.truncated ? 'text-amber-600' : 'text-blue-500'}>
-                · 已提取 {f.chars.toLocaleString()} 字{f.truncated ? '（内容过长，已截断）' : ''}
+                {typeof f.chars === 'number' && `· 已提取 ${f.chars.toLocaleString()} 字`}
+                {f.truncated && '（内容过长，已截断）'}
               </span>
               <button onClick={() => removeFile(f.id)} className="hover:text-red-500">
                 <X size={12} />
