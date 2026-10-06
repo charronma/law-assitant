@@ -1,4 +1,4 @@
-import type { ChatError, ChatRequest, FileInfo, ModelList, RedlineResult, Session, SSEEvent, UploadedFile } from '../types';
+import type { ChatError, ChatRequest, FileInfo, ModelList, RedlineStatus, Session, SSEEvent, UploadedFile } from '../types';
 
 import { supabase } from '../lib/supabase';
 
@@ -100,7 +100,8 @@ export async function uploadFile(
 /** Read a JSON response body, reporting progress when the server announced its size. */
 async function readJSONWithProgress<T>(res: Response, onProgress?: (fraction: number) => void): Promise<T> {
   const total = Number(res.headers.get('Content-Length')) || 0;
-  if (!onProgress || !total || !res.body) return res.json();
+  // Only worth a progress bar for a payload big enough to take a while.
+  if (!onProgress || total < 100_000 || !res.body) return res.json();
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
   let loaded = 0;
@@ -139,15 +140,11 @@ export async function getFileInfo(id: string): Promise<FileInfo> {
 }
 
 /**
- * Ask the model to review an uploaded .docx and return it with the proposed changes
- * applied as tracked changes and comments. Takes a minute or so.
+ * Start a background review of an uploaded .docx: the model proposes changes and the server
+ * writes them into the original as tracked changes and comments. A review can take minutes,
+ * so this returns a job id at once; follow it with getRedlineStatus.
  */
-export async function createRedline(
-  fileId: string,
-  instruction: string,
-  model?: string,
-  onDownloadProgress?: (fraction: number) => void,
-): Promise<RedlineResult> {
+export async function startRedline(fileId: string, instruction: string, model?: string): Promise<string> {
   const res = await apiFetch('/redline', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -157,7 +154,23 @@ export async function createRedline(
     const body: unknown = await res.json().catch(() => null);
     throw new ApiError(toChatError(body, `生成失败（HTTP ${res.status}）`));
   }
-  return readJSONWithProgress<RedlineResult>(res, onDownloadProgress);
+  const body = (await res.json()) as { job_id: string };
+  return body.job_id;
+}
+
+/** Progress of a review; once finished it carries the result (which includes the file). */
+export async function getRedlineStatus(jobId: string, onDownloadProgress?: (fraction: number) => void): Promise<RedlineStatus> {
+  const res = await apiFetch(`/redline/${encodeURIComponent(jobId)}`);
+  if (res.status === 404) {
+    throw new ApiError({ code: 'JOB_LOST', message: '任务已丢失（服务刚重启或已过期），请重新生成' });
+  }
+  if (!res.ok) throw new ApiError({ message: `查询进度失败（HTTP ${res.status}）` });
+  return readJSONWithProgress<RedlineStatus>(res, onDownloadProgress);
+}
+
+/** Stop a review that is still running. */
+export async function cancelRedline(jobId: string): Promise<void> {
+  await apiFetch(`/redline/${encodeURIComponent(jobId)}`, { method: 'DELETE' }).catch(() => undefined);
 }
 
 /** Render Markdown as a Word document; returns the file and the server-suggested name. */

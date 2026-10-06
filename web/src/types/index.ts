@@ -107,6 +107,19 @@ export interface RedlineResult {
   truncated?: boolean;
 }
 
+export interface RedlineStatus {
+  job_id: string;
+  state: 'running' | 'done' | 'error';
+  phase?: 'reviewing' | 'applying';
+  /** Characters of the model's answer so far. */
+  chars: number;
+  /** Changes the model has proposed so far. */
+  edits_found: number;
+  elapsed_ms: number;
+  result?: RedlineResult;
+  error?: ChatError;
+}
+
 export interface UploadedFile {
   file_id: string;
   filename: string;

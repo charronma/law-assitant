@@ -183,7 +183,9 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 |------|------|------|
 | GET | /api/models | 可选模型列表与默认模型：`{"models":[{"id","label","tier"}],"default":"..."}` |
 | POST | /api/chat | 发送消息（SSE 流式响应）。可选字段 `model`，缺省使用默认模型，不在白名单内返回 400 `INVALID_MODEL` |
-| POST | /api/redline | 对已上传的 .docx 生成**带修订痕迹和批注的修订版**：`{file_id, instruction, model?}` → `{filename, docx_base64, summary, applied[], skipped[]}`。模型给出结构化修改清单，后端把它写进原文件的 `w:ins/w:del` 和批注，保留原格式与已有修订；每个段落写入后会校验“接受修订=预期文本、拒绝修订=原文”，校验不过的修改会被跳过并列在 `skipped` 里，不会产出损坏的文件。非 .docx 返回 422 `NOT_DOCX` |
+| POST | /api/redline | 对已上传的 .docx 生成**带修订痕迹和批注的修订版**：`{file_id, instruction, model?}` → `202 {job_id}`。审阅在后台进行（模型可能要几分钟，不能占着一个 HTTP 请求）；非 .docx 返回 422 `NOT_DOCX` |
+| GET | /api/redline/{id} | 任务进度/结果：`{state: running|done|error, phase, chars, edits_found, elapsed_ms, result?, error?}`；完成时 `result` 含 `{filename, docx_base64, summary, applied[], skipped[]}`。模型给出结构化修改清单，后端写进原文件的 `w:ins/w:del` 和批注，保留原格式与已有修订；每个段落写入后会校验“接受修订=预期文本、拒绝修订=原文”，校验不过的修改被跳过并列在 `skipped`。任务只在内存里（重启后返回 404，前端提示重新生成），完成后保留 20 分钟，每用户最多 3 个 |
+| DELETE | /api/redline/{id} | 取消任务 |
 | GET | /api/files/{id} | 已上传文件的元数据（文件名、大小、字数） |
 | POST | /api/export/docx | 把一条回复（Markdown）导出为 Word：`{title?, content}` → `.docx`（标题/列表/表格/加粗/引用，末尾附免责声明） |
 | POST | /api/upload | 上传文件（.docx/.pdf/.txt/.md）。成功返回 `chars`/`preview`/`truncated`；无法提取文字时返回 422 `{code,message}`（`NO_TEXT`/`UNSUPPORTED_FORMAT`/`EXTRACT_FAILED`/`FILE_TOO_LARGE`） |

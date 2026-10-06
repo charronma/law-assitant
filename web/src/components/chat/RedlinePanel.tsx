@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FileDiff, Loader2, ChevronDown, ChevronUp, X } from 'lucide-react';
-import { ApiError, createRedline, getFileInfo } from '../../services/api';
+import { ApiError, cancelRedline, getFileInfo, getRedlineStatus, startRedline } from '../../services/api';
 import { base64ToBlob, saveBlob } from '../../lib/download';
-import type { FileInfo, RedlineResult } from '../../types';
+import type { FileInfo, RedlineResult, RedlineStatus } from '../../types';
 
+const POLL_MS = 1500;
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 interface RedlinePanelProps {
@@ -39,6 +40,16 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(0);
   const [download, setDownload] = useState<number | null>(null);
+  const [progress, setProgress] = useState({ edits: 0, applying: false });
+  const jobRef = useRef<string | null>(null);
+  /** Bumped to abandon a poll loop (cancel, new run, unmount). */
+  const runRef = useRef(0);
+  useEffect(
+    () => () => {
+      runRef.current += 1;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (startedAt === null) return;
@@ -70,23 +81,60 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
   const running = state.phase === 'running';
 
   const run = async () => {
+    const myRun = ++runRef.current;
+    const live = () => runRef.current === myRun;
     const t0 = Date.now();
     setStartedAt(t0);
     setNow(t0);
     setDownload(null);
+    setProgress({ edits: 0, applying: false });
     setState({ phase: 'running' });
+    const stop = () => setStartedAt(null);
     try {
-      const result = await createRedline(current.id, effectiveInstruction, model, setDownload);
-      if (result.docx_base64 && result.filename) {
-        saveBlob(base64ToBlob(result.docx_base64, DOCX_MIME), result.filename);
+      const jobId = await startRedline(current.id, effectiveInstruction, model);
+      jobRef.current = jobId;
+      let failedPolls = 0;
+      for (;;) {
+        await new Promise(r => setTimeout(r, POLL_MS));
+        if (!live()) return;
+        let st: RedlineStatus;
+        try {
+          st = await getRedlineStatus(jobId, setDownload);
+          failedPolls = 0;
+        } catch (err) {
+          // A lost job is final; a dropped connection is worth a few retries.
+          if (err instanceof ApiError && err.code === 'JOB_LOST') throw err;
+          if (++failedPolls >= 5) throw new Error('网络连接不稳定，无法获取进度，请检查网络后重试', { cause: err });
+          continue;
+        }
+        if (!live()) return;
+        if (st.state === 'running') {
+          setProgress({ edits: st.edits_found, applying: st.phase === 'applying' });
+        } else if (st.state === 'error') {
+          throw new ApiError(st.error ?? { message: '生成失败，请重试' });
+        } else if (st.result) {
+          if (st.result.docx_base64 && st.result.filename) {
+            saveBlob(base64ToBlob(st.result.docx_base64, DOCX_MIME), st.result.filename);
+          }
+          setState({ phase: 'done', result: st.result });
+          stop();
+          return;
+        }
       }
-      setState({ phase: 'done', result });
-      setStartedAt(null);
     } catch (err) {
-      setStartedAt(null);
+      if (!live()) return;
+      stop();
       if (err instanceof ApiError) onModelError(err.code, err.model);
       setState({ phase: 'error', message: err instanceof Error ? err.message : '生成失败，请重试' });
     }
+  };
+
+  const cancel = () => {
+    runRef.current += 1; // abandon the poll loop
+    if (jobRef.current) void cancelRedline(jobRef.current);
+    jobRef.current = null;
+    setStartedAt(null);
+    setState({ phase: 'idle' });
   };
 
   return (
@@ -149,9 +197,19 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
               {running && <Loader2 size={14} className="animate-spin" />}
               {running ? (download === null ? '正在审阅合同…' : `正在下载 ${Math.round(download * 100)}%`) : '生成并下载'}
             </button>
+            {running && (
+              <button type="button" onClick={cancel} className="text-xs text-gray-500 underline hover:text-gray-700">
+                取消
+              </button>
+            )}
             {running && download === null && startedAt !== null && (
               <span data-testid="redline-elapsed" className="text-xs text-gray-500">
-                通常需要 30–90 秒，请不要关闭页面 · 已用时 {Math.max(0, Math.floor((now - startedAt) / 1000))} 秒
+                {progress.applying
+                  ? '正在把修改写入文档'
+                  : progress.edits > 0
+                    ? `AI 已提出 ${progress.edits} 处修改，仍在审阅`
+                    : 'AI 正在阅读合同（通常需要 30–90 秒）'}
+                {' · '}已用时 {Math.max(0, Math.floor((now - startedAt) / 1000))} 秒
               </span>
             )}
           </div>

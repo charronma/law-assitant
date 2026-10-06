@@ -3,13 +3,16 @@ package handler
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -18,17 +21,61 @@ import (
 	"law-assistant/internal/tool"
 )
 
-func (e *testEnv) redline(t *testing.T, bearer string, body map[string]any) (int, redlineResponse, string) {
-	t.Helper()
+// startRedline posts a redline request; a job is accepted with 202 and a job id.
+func (e *testEnv) startRedline(bearer string, body any) (*httptest.ResponseRecorder, string) {
 	raw, _ := json.Marshal(body)
 	rec := e.do("POST", "/api/redline", bearer, strings.NewReader(string(raw)), "application/json")
-	var out redlineResponse
+	var out struct {
+		JobID string `json:"job_id"`
+	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	return rec.Code, out, rec.Body.String()
+	return rec, out.JobID
 }
 
-func scripted(reply string) func([]*schema.Message) (string, error) {
-	return func([]*schema.Message) (string, error) { return reply, nil }
+func (e *testEnv) redlineStatus(t *testing.T, bearer, id string) (int, redlineStatus) {
+	t.Helper()
+	rec := e.do("GET", "/api/redline/"+id, bearer, nil, "")
+	var st redlineStatus
+	_ = json.Unmarshal(rec.Body.Bytes(), &st)
+	return rec.Code, st
+}
+
+// redlineFlow runs a whole review: start, poll until it ends. Failures come back
+// the way a synchronous API would have reported them, as (status, error JSON).
+func (e *testEnv) redlineFlow(t *testing.T, bearer string, body map[string]any) (int, redlineResponse, string) {
+	t.Helper()
+	rec, id := e.startRedline(bearer, body)
+	if rec.Code != http.StatusAccepted {
+		return rec.Code, redlineResponse{}, rec.Body.String()
+	}
+	for i := 0; i < 400; i++ {
+		code, st := e.redlineStatus(t, bearer, id)
+		if code != 200 {
+			t.Fatalf("status poll: %d", code)
+		}
+		switch st.State {
+		case "done":
+			return 200, *st.Result, ""
+		case "error":
+			raw, _ := json.Marshal(st.Error)
+			return st.Error.Status, redlineResponse{}, string(raw)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("review did not finish")
+	return 0, redlineResponse{}, ""
+}
+
+// streamText delivers text as a stream of small chunks, like a model would.
+func streamText(text string) streamPlan {
+	rs := []rune(text)
+	var chunks []string
+	for len(rs) > 0 {
+		n := min(24, len(rs))
+		chunks = append(chunks, string(rs[:n]))
+		rs = rs[n:]
+	}
+	return okStream(chunks...)
 }
 
 const penaltyPlan = `{"summary":"违约金偏高","edits":[
@@ -58,9 +105,9 @@ func TestRedlineProducesATrackedChangesDocument(t *testing.T) {
 	alice := token(t, "alice")
 	up := e.upload(t, alice, "劳动合同.docx", fixture(t, "contract.docx"))
 	n := penaltyParagraph(t)
-	e.llm.setGenerate("kimi-k3", scripted(strings.Replace(penaltyPlan, "%d", itoa(n), 1)))
+	e.llm.setPlan("kimi-k3", streamText(strings.Replace(penaltyPlan, "%d", itoa(n), 1)))
 
-	code, out, raw := e.redline(t, alice, map[string]any{"file_id": up.FileID, "instruction": "我是劳动者，站在劳动者立场修改", "model": "kimi-k3"})
+	code, out, raw := e.redlineFlow(t, alice, map[string]any{"file_id": up.FileID, "instruction": "我是劳动者，站在劳动者立场修改", "model": "kimi-k3"})
 	if code != http.StatusOK {
 		t.Fatalf("%d %s", code, raw)
 	}
@@ -137,18 +184,22 @@ func TestRedlineRejectsWhatItCannotRevise(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			raw, _ := json.Marshal(tc.body)
-			rec := e.do("POST", "/api/redline", tc.bearer, strings.NewReader(string(raw)), "application/json")
-			if rec.Code != tc.status || decodeErr(t, rec).Code != tc.code {
-				t.Fatalf("%d %s", rec.Code, rec.Body)
+			code, _, raw := e.redlineFlow(t, tc.bearer, tc.body)
+			var got errBody
+			_ = json.Unmarshal([]byte(raw), &got)
+			if code != tc.status || got.Code != tc.code {
+				t.Fatalf("%d %s", code, raw)
 			}
 		})
 	}
 	if got := e.llm.models(); len(got) != 0 {
 		t.Errorf("the model must not be called for a request that cannot succeed: %v", got)
 	}
-	if rec := e.do("POST", "/api/redline", "", strings.NewReader(`{"file_id":"x"}`), "application/json"); rec.Code != http.StatusUnauthorized {
+	if rec, _ := e.startRedline("", map[string]any{"file_id": "x"}); rec.Code != http.StatusUnauthorized {
 		t.Errorf("anonymous: %d", rec.Code)
+	}
+	if rec := e.do("GET", "/api/redline/abc", "", nil, ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous status: %d", rec.Code)
 	}
 }
 
@@ -156,20 +207,31 @@ func TestRedlineModelFailuresAreReportedClearly(t *testing.T) {
 	e := newTestEnv(t)
 	alice := token(t, "alice")
 	up := e.upload(t, alice, "a.docx", fixture(t, "contract.docx"))
+	body := map[string]any{"file_id": up.FileID, "model": "kimi-k3"}
 
-	e.llm.setGenerate("kimi-k3", func([]*schema.Message) (string, error) { return "", quotaErr() })
-	rec := e.do("POST", "/api/redline", alice, strings.NewReader(`{"file_id":"`+up.FileID+`","model":"kimi-k3"}`), "application/json")
-	if rec.Code != http.StatusPaymentRequired || decodeErr(t, rec).Code != "QUOTA_EXHAUSTED" {
-		t.Errorf("quota: %d %s", rec.Code, rec.Body)
+	e.llm.setPlan("kimi-k3", failOnCreate(quotaErr()))
+	code, _, raw := e.redlineFlow(t, alice, body)
+	var got errBody
+	_ = json.Unmarshal([]byte(raw), &got)
+	if code == 200 || got.Code != "QUOTA_EXHAUSTED" || got.Model != "kimi-k3" {
+		t.Errorf("quota: %d %s", code, raw)
 	}
-	if strings.Contains(rec.Body.String(), upstreamSecret) {
+	if strings.Contains(raw, upstreamSecret) {
 		t.Error("upstream detail leaked")
 	}
 
-	e.llm.setGenerate("kimi-k3", scripted("抱歉，我无法完成这个任务"))
-	rec = e.do("POST", "/api/redline", alice, strings.NewReader(`{"file_id":"`+up.FileID+`","model":"kimi-k3"}`), "application/json")
-	if rec.Code != http.StatusBadGateway || decodeErr(t, rec).Code != "REDLINE_PLAN_INVALID" {
-		t.Errorf("garbage: %d %s", rec.Code, rec.Body)
+	e.llm.setPlan("kimi-k3", failAfter(apiErr(429, "slow down"), "部分"))
+	code, _, raw = e.redlineFlow(t, alice, body)
+	_ = json.Unmarshal([]byte(raw), &got)
+	if code == 200 || got.Code != "RATE_LIMITED" {
+		t.Errorf("failure mid-stream: %d %s", code, raw)
+	}
+
+	e.llm.setPlan("kimi-k3", streamText("抱歉，我无法完成这个任务"))
+	code, _, raw = e.redlineFlow(t, alice, body)
+	_ = json.Unmarshal([]byte(raw), &got)
+	if code == 200 || got.Code != "REDLINE_PLAN_INVALID" {
+		t.Errorf("garbage: %d %s", code, raw)
 	}
 }
 
@@ -177,8 +239,8 @@ func TestRedlineWithNothingToChangeReturnsNoFile(t *testing.T) {
 	e := newTestEnv(t)
 	alice := token(t, "alice")
 	up := e.upload(t, alice, "a.docx", fixture(t, "contract.docx"))
-	e.llm.setGenerate("kimi-k3", scripted(`{"summary":"合同整体对您有利，无需修改","edits":[],"insertions":[]}`))
-	code, out, raw := e.redline(t, alice, map[string]any{"file_id": up.FileID, "model": "kimi-k3"})
+	e.llm.setPlan("kimi-k3", streamText(`{"summary":"合同整体对您有利，无需修改","edits":[],"insertions":[]}`))
+	code, out, raw := e.redlineFlow(t, alice, map[string]any{"file_id": up.FileID, "model": "kimi-k3"})
 	if code != 200 || out.DocxBase64 != "" || len(out.Applied) != 0 || !strings.Contains(out.Summary, "无需修改") {
 		t.Fatalf("%d %s", code, raw)
 	}
@@ -188,13 +250,12 @@ func TestRedlineCountsAgainstTheUsersRateLimit(t *testing.T) {
 	e := newTestEnvCfg(t, func(c *config.Config) { c.ChatRatePerMinute = 1 })
 	alice := token(t, "alice")
 	up := e.upload(t, alice, "a.docx", fixture(t, "contract.docx"))
-	e.llm.setGenerate("kimi-k3", scripted(`{"summary":"x","edits":[]}`))
-	body := `{"file_id":"` + up.FileID + `","model":"kimi-k3"}`
-	if rec := e.do("POST", "/api/redline", alice, strings.NewReader(body), "application/json"); rec.Code != 200 {
-		t.Fatal(rec.Body)
+	e.llm.setPlan("kimi-k3", streamText(`{"summary":"x","edits":[]}`))
+	body := map[string]any{"file_id": up.FileID, "model": "kimi-k3"}
+	if code, _, raw := e.redlineFlow(t, alice, body); code != 200 {
+		t.Fatal(raw)
 	}
-	rec := e.do("POST", "/api/redline", alice, strings.NewReader(body), "application/json")
-	if rec.Code != http.StatusTooManyRequests {
+	if rec, _ := e.startRedline(alice, body); rec.Code != http.StatusTooManyRequests {
 		t.Errorf("second call: %d", rec.Code)
 	}
 }
@@ -218,5 +279,147 @@ func TestGetFileMetadata(t *testing.T) {
 	}
 	if rec := e.do("GET", "/api/files/"+up.FileID, "", nil, ""); rec.Code != http.StatusUnauthorized {
 		t.Errorf("anonymous: %d", rec.Code)
+	}
+}
+
+// ---- the job itself: progress, cancel, timeout, ownership, limits ---------------
+
+// blockingPlan sends head, then waits for release before sending tail.
+func blockingPlan(head, tail string, release <-chan struct{}) streamPlan {
+	return func() (*schema.StreamReader[*schema.Message], error) {
+		sr, sw := schema.Pipe[*schema.Message](4)
+		sw.Send(schema.AssistantMessage(head, nil), nil)
+		go func() {
+			<-release
+			sw.Send(schema.AssistantMessage(tail, nil), nil)
+			sw.Close()
+		}()
+		return sr, nil
+	}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for i := 0; i < 400; i++ {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func TestRedlineStartsAtOnceAndReportsRealProgress(t *testing.T) {
+	e := newTestEnv(t)
+	alice := token(t, "alice")
+	up := e.upload(t, alice, "a.docx", fixture(t, "contract.docx"))
+	release := make(chan struct{})
+	n := penaltyParagraph(t)
+	head := `{"summary":"s","edits":[{"para":` + itoa(n) + `,"find":"十万元","replace":"一万元","comment":"c"},{"para":1,"find"`
+	e.llm.setPlan("kimi-k3", blockingPlan(head, `:"x","replace":"y"}],"insertions":[]}`, release))
+
+	rec, id := e.startRedline(alice, map[string]any{"file_id": up.FileID, "model": "kimi-k3"})
+	if rec.Code != http.StatusAccepted || id == "" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	// While the model is still writing, the status shows how far it got.
+	waitFor(t, "progress", func() bool { _, st := e.redlineStatus(t, alice, id); return st.EditsFound >= 2 })
+	_, st := e.redlineStatus(t, alice, id)
+	if st.State != "running" || st.Phase != "reviewing" || st.Chars < 50 || st.Result != nil {
+		t.Errorf("running status: %+v", st)
+	}
+
+	close(release)
+	waitFor(t, "completion", func() bool { _, st := e.redlineStatus(t, alice, id); return st.State == "done" })
+	_, st = e.redlineStatus(t, alice, id)
+	if st.Result == nil || st.Result.DocxBase64 == "" || len(st.Result.Applied) == 0 {
+		t.Errorf("done status: %+v", st)
+	}
+	// A finished result stays fetchable (the client may poll again), with a Content-Length for download progress.
+	rec2 := e.do("GET", "/api/redline/"+id, alice, nil, "")
+	if rec2.Header().Get("Content-Length") == "" {
+		t.Error("the finished result must carry a Content-Length")
+	}
+}
+
+func TestRedlineJobsBelongToTheirOwner(t *testing.T) {
+	e := newTestEnv(t)
+	alice, bob := token(t, "alice"), token(t, "bob")
+	up := e.upload(t, alice, "a.docx", fixture(t, "contract.docx"))
+	e.llm.setPlan("kimi-k3", streamText(`{"summary":"x","edits":[]}`))
+	_, id := e.startRedline(alice, map[string]any{"file_id": up.FileID, "model": "kimi-k3"})
+	if code, _ := e.redlineStatus(t, bob, id); code != http.StatusNotFound {
+		t.Errorf("bob read alice's job: %d", code)
+	}
+	if rec := e.do("DELETE", "/api/redline/"+id, bob, nil, ""); rec.Code != http.StatusNoContent {
+		t.Errorf("delete: %d", rec.Code)
+	}
+	if code, _ := e.redlineStatus(t, alice, id); code != 200 {
+		t.Errorf("bob's DELETE must not remove alice's job: %d", code)
+	}
+	if code, _ := e.redlineStatus(t, alice, "no-such-job"); code != http.StatusNotFound {
+		t.Errorf("unknown job: %d", code)
+	}
+}
+
+func TestRedlineCancelStopsTheModelAndFreesTheSlot(t *testing.T) {
+	e := newTestEnvCfg(t, func(c *config.Config) { c.MaxConcurrentChats = 1 })
+	alice := token(t, "alice")
+	up := e.upload(t, alice, "a.docx", fixture(t, "contract.docx"))
+	release := make(chan struct{})
+	defer close(release)
+	e.llm.setPlan("kimi-k3", blockingPlan(`{"summary":`, `"x"}`, release))
+	body := map[string]any{"file_id": up.FileID, "model": "kimi-k3"}
+
+	_, id := e.startRedline(alice, body)
+	waitFor(t, "first token", func() bool { _, st := e.redlineStatus(t, alice, id); return st.Chars > 0 })
+	// The one slot is taken while the job runs...
+	if rec, _ := e.startRedline(alice, body); rec.Code != http.StatusTooManyRequests || decodeErr(t, rec).Code != "TOO_MANY_STREAMS" {
+		t.Errorf("second job while the first runs: %d %s", rec.Code, rec.Body)
+	}
+	// ...and cancelling frees it and forgets the job.
+	if rec := e.do("DELETE", "/api/redline/"+id, alice, nil, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("cancel: %d", rec.Code)
+	}
+	if code, _ := e.redlineStatus(t, alice, id); code != http.StatusNotFound {
+		t.Errorf("cancelled job still visible: %d", code)
+	}
+}
+
+func TestRedlineTimeoutIsReportedNotHung(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv.redlineTimeout = 150 * time.Millisecond
+	alice := token(t, "alice")
+	up := e.upload(t, alice, "a.docx", fixture(t, "contract.docx"))
+	// A model stuck mid-answer: the stream never yields again until the deadline hits.
+	e.llm.setPlan("kimi-k3", func() (*schema.StreamReader[*schema.Message], error) {
+		sr, sw := schema.Pipe[*schema.Message](1)
+		go func() {
+			sw.Send(schema.AssistantMessage(`{"summary":`, nil), nil)
+			<-time.After(300 * time.Millisecond)
+			sw.Send(nil, context.DeadlineExceeded)
+			sw.Close()
+		}()
+		return sr, nil
+	})
+	code, _, raw := e.redlineFlow(t, alice, map[string]any{"file_id": up.FileID, "model": "kimi-k3"})
+	var got errBody
+	_ = json.Unmarshal([]byte(raw), &got)
+	if code == 200 || got.Code != "REDLINE_TIMEOUT" || !strings.Contains(got.Message, "太慢") || strings.Contains(got.Message, "0 分钟") {
+		t.Errorf("%d %s", code, raw)
+	}
+}
+
+func TestRedlineSlotIsReleasedWhenTheJobEnds(t *testing.T) {
+	e := newTestEnvCfg(t, func(c *config.Config) { c.MaxConcurrentChats = 1 })
+	alice := token(t, "alice")
+	up := e.upload(t, alice, "a.docx", fixture(t, "contract.docx"))
+	e.llm.setPlan("kimi-k3", streamText(`{"summary":"x","edits":[]}`))
+	body := map[string]any{"file_id": up.FileID, "model": "kimi-k3"}
+	for i := 0; i < 3; i++ {
+		if code, _, raw := e.redlineFlow(t, alice, body); code != 200 {
+			t.Fatalf("run %d: %d %s", i, code, raw)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

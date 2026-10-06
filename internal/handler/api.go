@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"time"
 
 	"law-assistant/internal/agent"
 	"law-assistant/internal/auth"
@@ -27,6 +28,9 @@ type Server struct {
 	chatRate     *limit.Rate
 	uploadRate   *limit.Rate
 	chatStreams  *limit.Concurrency
+
+	redlineJobs    *redlineJobs
+	redlineTimeout time.Duration // how long one review may run
 }
 
 // NewServer creates a new server with all dependencies
@@ -42,6 +46,9 @@ func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore st
 		chatRate:     limit.NewRate(cfg.ChatRatePerMinute, 0),
 		uploadRate:   limit.NewRate(cfg.UploadRatePerMin, 0),
 		chatStreams:  limit.NewConcurrency(cfg.MaxConcurrentChats),
+
+		redlineJobs:    newRedlineJobs(),
+		redlineTimeout: defaultRedlineTimeout,
 	}
 }
 
@@ -54,6 +61,8 @@ func (s *Server) SetupRoutes() http.Handler {
 	mux.HandleFunc("POST /api/upload", s.handleUpload)
 	mux.HandleFunc("POST /api/export/docx", s.handleExportDocx)
 	mux.HandleFunc("POST /api/redline", s.handleRedline)
+	mux.HandleFunc("GET /api/redline/{id}", s.handleRedlineStatus)
+	mux.HandleFunc("DELETE /api/redline/{id}", s.handleRedlineCancel)
 	mux.HandleFunc("GET /api/files/{id}", s.handleGetFile)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
