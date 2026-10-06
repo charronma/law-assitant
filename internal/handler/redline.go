@@ -224,7 +224,19 @@ func (s *Server) handleRedline(w http.ResponseWriter, r *http.Request) {
 		resp.Filename = base + "-修订版.docx"
 		resp.DocxBase64 = base64.StdEncoding.EncodeToString(res.Docx)
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeSizedJSON(w, resp)
+}
+
+// writeSizedJSON sends v with a Content-Length so the browser can show download progress.
+func writeSizedJSON(w http.ResponseWriter, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to encode response")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
 }
 
 func describe(plan redline.Plan, it redline.Item) redlineChange {
