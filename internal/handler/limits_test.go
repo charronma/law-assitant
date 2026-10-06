@@ -3,8 +3,11 @@ package handler
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -263,5 +266,86 @@ func TestLimitDocuments(t *testing.T) {
 	}
 	if got := strings.Join(limitDocuments([]string{"aaaa", "bbbbbbbb"}, 5), ","); got != "bbbbb" {
 		t.Errorf("the newest document is always kept, cut to fit: %s", got)
+	}
+}
+
+// syncRecorder lets a test read the body while the handler is still writing it.
+type syncRecorder struct {
+	*httptest.ResponseRecorder
+	mu sync.Mutex
+}
+
+func (r *syncRecorder) Write(b []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ResponseRecorder.Write(b)
+}
+
+func (r *syncRecorder) Flush() {}
+
+func (r *syncRecorder) text() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Body.String()
+}
+
+// ---- stopping a reply -------------------------------------------------------
+
+func TestStoppedReplyIsSavedWithTheMarker(t *testing.T) {
+	e := newTestEnv(t)
+	alice := token(t, "alice")
+	sid := e.createSession(t, alice)
+
+	release := make(chan struct{})
+	e.llm.setPlan("kimi-k3", func() (*schema.StreamReader[*schema.Message], error) {
+		sr, sw := schema.Pipe[*schema.Message](4)
+		sw.Send(schema.AssistantMessage("回答到一半", nil), nil)
+		go func() {
+			<-release
+			sw.Send(nil, context.Canceled) // what the provider client reports when the request is cancelled
+			sw.Close()
+		}()
+		return sr, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	raw := `{"session_id":"` + sid + `","message":"长问题","model":"kimi-k3"}`
+	req := httptest.NewRequest("POST", "/api/chat", strings.NewReader(raw)).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+alice)
+	req.Header.Set("Content-Type", "application/json")
+	rec := &syncRecorder{ResponseRecorder: httptest.NewRecorder()}
+	done := make(chan struct{})
+	go func() { e.h.ServeHTTP(rec, req); close(done) }()
+
+	// Wait until the first token went out, then the user presses Stop.
+	for i := 0; i < 200 && !strings.Contains(rec.text(), "回答到一半"); i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	close(release)
+	<-done
+
+	h := e.history(t, "alice", sid)
+	if len(h) != 2 || h[1].Role != "assistant" || h[1].Content != "回答到一半"+StoppedMarker {
+		t.Fatalf("history = %+v", h)
+	}
+	if strings.Contains(rec.text(), "event: error") {
+		t.Errorf("a client-side stop must not be reported as a model error:\n%s", rec.Body)
+	}
+}
+
+func TestUpstreamErrorStillReportedWhenTheClientStaysConnected(t *testing.T) {
+	e := newTestEnv(t)
+	alice := token(t, "alice")
+	sid := e.createSession(t, alice)
+	e.llm.setPlan("kimi-k3", failAfter(quotaErr(), "部分"))
+	rec := e.chat(t, alice, map[string]any{"session_id": sid, "message": "q", "model": "kimi-k3"})
+	if !strings.Contains(rec.Body.String(), "event: error") {
+		t.Errorf("expected an SSE error event:\n%s", rec.Body)
+	}
+	for _, m := range e.history(t, "alice", sid) {
+		if strings.Contains(m.Content, StoppedMarker) {
+			t.Errorf("an upstream failure must not be labelled as stopped by the user: %+v", m)
+		}
 	}
 }

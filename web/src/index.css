@@ -30,6 +30,13 @@ body {
 .markdown-content h3 { font-size: 1.1rem; font-weight: 600; margin: 0.75rem 0 0.5rem; }
 .markdown-content p { margin: 0.5rem 0; line-height: 1.7; }
 .markdown-content ul, .markdown-content ol { margin: 0.5rem 0; padding-left: 1.5rem; }
+/* Tailwind's preflight sets list-style: none on every list; restore the markers. */
+.markdown-content ul { list-style: disc outside; }
+.markdown-content :is(ul, ol) ul { list-style-type: circle; }
+.markdown-content :is(ul, ol) :is(ul, ol) ul { list-style-type: square; }
+.markdown-content ol { list-style: decimal outside; }
+.markdown-content ol ol { list-style-type: lower-alpha; }
+.markdown-content li > ul, .markdown-content li > ol { margin: 0.25rem 0; }
 .markdown-content li { margin: 0.25rem 0; line-height: 1.6; }
 .markdown-content strong { font-weight: 600; }
 .markdown-content blockquote {

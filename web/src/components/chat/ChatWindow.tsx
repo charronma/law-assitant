@@ -22,13 +22,13 @@ interface ChatWindowProps {
   sessionId: string | null;
   onSessionCreated: (sessionId: string) => void;
   onNewChat: () => void;
-  /** A reply finished: the conversation list should be refreshed. */
-  onTurnFinished: () => void;
+  /** The conversation list changed on the server and should be refreshed. */
+  onSessionsChanged: () => void;
   /** Opens the navigation drawer (mobile). */
   onOpenSidebar: () => void;
 }
 
-export default function ChatWindow({ module, sessionId, onSessionCreated, onNewChat, onTurnFinished, onOpenSidebar }: ChatWindowProps) {
+export default function ChatWindow({ module, sessionId, onSessionCreated, onNewChat, onSessionsChanged, onOpenSidebar }: ChatWindowProps) {
   const { models, selected, select, exhausted, markExhausted } = useModels();
 
   // Remember models that ran out of quota so the picker can flag them.
@@ -55,7 +55,7 @@ export default function ChatWindow({ module, sessionId, onSessionCreated, onNewC
     sessionId,
     model: selected || undefined,
     onSessionCreated,
-    onTurnFinished,
+    onSessionsChanged,
     onError: handleChatError,
   });
 
