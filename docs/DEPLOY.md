@@ -15,9 +15,9 @@
 > ⚠️ 当前限制（公开部署前请知晓）
 > - 会话与消息存在 Supabase Postgres 里（见第 1 步），重启 / 重新部署不会丢失。
 >   **前提是同时设置了 `SUPABASE_URL` 和 `SUPABASE_PUBLISHABLE_KEY`**；漏设时后端会退回内存存储（只在启动日志里打印一条警告，不会报错），务必检查。
-> - 上传文件的**元数据和文本缓存在进程内存里**，文件本身在本地磁盘（`UPLOAD_DIR`）：重启后已上传的文件无法再被引用，
->   并且**只能跑 1 个实例**（多实例间互相看不到）。迁移到 Supabase Storage 之前请保持单实例。
-> - **没有限流**：任何注册用户都能消耗你的千问额度。
+> - 上传文件存在 Supabase Storage（私有 bucket `uploads`），元数据和提取文本在 `uploaded_files` 表，重启 / 多实例都不受影响
+>   （同样要求设置了 `SUPABASE_URL` 和 `SUPABASE_PUBLISHABLE_KEY`，并已应用 `20261006000000_uploaded_files.sql`）。
+> - 限流（按用户：聊天/上传频率、并发回答数）和消息长度、历史窗口默认开启，见下表；限流计数在进程内，多实例时各自计数。
 > - CORS 只允许 `FRONTEND_URL` 这一个来源，Vercel 的预览部署域名会被拦截。
 
 ## 1. Supabase
@@ -53,6 +53,7 @@
 | `QWEN_BASE_URL` | 可选，默认国内站；国际站密钥需设为 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | `FRONTEND_URL` | 前端的**完整来源**，如 `https://your-app.vercel.app`（无结尾 `/`） |
 | `UPLOAD_DIR` | 默认 `/data/uploads`；挂载持久卷到 `/data` 才能保留上传文件 |
+| `CHAT_RATE_PER_MINUTE` / `UPLOAD_RATE_PER_MINUTE` / `MAX_CONCURRENT_CHATS` / `MAX_MESSAGE_CHARS` / `MAX_HISTORY_CHARS` | 可选，按用户限流与上下文预算，默认 20 / 10 / 2 / 8000 / 30000，详见 README；限流状态在进程内，多副本时每个副本各自计数 |
 
 - 监听端口：自动读取平台注入的 `PORT`（也可用 `SERVER_PORT`）；镜像默认 8080。
 - 健康检查路径：`GET /healthz`（免鉴权）。
@@ -91,5 +92,5 @@ curl -s https://<ref>.supabase.co/auth/v1/.well-known/jwks.json   # 应返回 {"
 
 - [x] 会话持久化（Supabase Postgres）
 - [ ] 每用户限流 / 额度控制
-- [ ] 上传文件迁移到 Supabase Storage（私有 bucket）
+- [x] 上传文件迁移到 Supabase Storage（私有 bucket）— 需应用 `20261006000000_uploaded_files.sql`
 - [ ] 评估合同等敏感文件发送给第三方模型的合规与脱敏要求

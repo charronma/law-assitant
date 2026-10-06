@@ -48,7 +48,7 @@ func main() {
 
 	// Initialize stores
 	sessionStore := newSessionRepository(cfg)
-	fileStore := store.NewFileStore(cfg.UploadDir)
+	fileStore := newFileRepository(cfg)
 
 	// Initialize agent manager
 	agentMgr := agent.NewAgentManager(models)
@@ -100,4 +100,15 @@ func newSessionRepository(cfg *config.Config) store.SessionRepository {
 	}
 	log.Printf("WARNING: conversations are kept in memory and lost on restart (set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY to persist them)")
 	return store.NewSessionStore()
+}
+
+// newFileRepository stores uploads in Supabase (private bucket + table) when it
+// is fully configured, and otherwise on local disk with in-memory metadata.
+func newFileRepository(cfg *config.Config) store.FileRepository {
+	if cfg.SupabaseURL != "" && cfg.SupabasePublishableKey != "" && !cfg.AuthDisabled {
+		log.Printf("Uploads are stored in Supabase Storage (bucket %q)", "uploads")
+		return store.NewSupabaseFileStore(cfg.SupabaseURL, cfg.SupabasePublishableKey, auth.Token)
+	}
+	log.Printf("WARNING: uploads are kept on local disk and their metadata in memory; both are lost on restart")
+	return store.NewFileStore(cfg.UploadDir)
 }

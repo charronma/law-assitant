@@ -114,11 +114,11 @@ export function useChat({ module, sessionId, model, onSessionCreated, onError }:
       },
       // onToken
       (token) => {
-        setStreamingContent(prev => {
-          const next = prev + token;
-          streamingContentRef.current = next;
-          return next;
-        });
+        // Update the ref synchronously: a setState updater runs lazily, so when the
+        // last tokens and "done" arrive in the same tick onDone would read a stale ref
+        // and the saved answer would lose its tail.
+        streamingContentRef.current += token;
+        setStreamingContent(streamingContentRef.current);
       },
       // onDone - 只处理一次，避免 Strict Mode 或重复 SSE 导致回答出现两遍
       (messageId) => {

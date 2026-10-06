@@ -13,18 +13,24 @@ interface ChatInputProps {
 
 const FILE_MODULES: ModuleType[] = ['contract', 'evidence_org'];
 
+// Mirrors the server default (MAX_MESSAGE_CHARS); the server is authoritative.
+const MAX_MESSAGE_CHARS = 8000;
+
 export default function ChatInput({ onSend, onStop, isStreaming, module, sessionId }: ChatInputProps) {
   const [input, setInput] = useState('');
-  const [uploadedFiles, setUploadedFiles] = useState<{ id: string; name: string }[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<{ id: string; name: string; chars: number; truncated: boolean }[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const showUpload = FILE_MODULES.includes(module);
+  const length = [...input].length;
+  const tooLong = length > MAX_MESSAGE_CHARS;
 
   const handleSubmit = useCallback(() => {
     const text = input.trim();
-    if (!text || isStreaming) return;
+    if (!text || isStreaming || [...text].length > MAX_MESSAGE_CHARS) return;
     const fileIds = uploadedFiles.map(f => f.id);
     onSend(text, fileIds.length > 0 ? fileIds : undefined);
     setInput('');
@@ -43,11 +49,15 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
     if (!file) return;
 
     setIsUploading(true);
+    setUploadError(null);
     try {
       const result = await uploadFile(file, sessionId || undefined);
-      setUploadedFiles(prev => [...prev, { id: result.file_id, name: result.filename }]);
-    } catch {
-      alert('文件上传失败，请重试');
+      setUploadedFiles(prev => [
+        ...prev,
+        { id: result.file_id, name: result.filename, chars: result.chars, truncated: result.truncated },
+      ]);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : '文件上传失败，请重试');
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -67,13 +77,33 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
   };
 
   return (
-    <div className="border-t border-gray-200 bg-white p-4">
+    <div className="border-t border-gray-200 bg-white p-3 md:p-4 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      {uploadError && (
+        <div
+          role="alert"
+          data-testid="upload-error"
+          className="flex items-start justify-between gap-2 mb-2 px-3 py-2 bg-red-50 border border-red-200 text-red-700 text-xs rounded-md"
+        >
+          <span>{uploadError}</span>
+          <button onClick={() => setUploadError(null)} aria-label="关闭" className="shrink-0 hover:text-red-900">
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
       {/* Uploaded files */}
       {uploadedFiles.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
           {uploadedFiles.map(f => (
-            <span key={f.id} className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded-md">
+            <span
+              key={f.id}
+              data-testid="file-chip"
+              className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded-md"
+            >
               📎 {f.name}
+              <span className={f.truncated ? 'text-amber-600' : 'text-blue-500'}>
+                · 已提取 {f.chars.toLocaleString()} 字{f.truncated ? '（内容过长，已截断）' : ''}
+              </span>
               <button onClick={() => removeFile(f.id)} className="hover:text-red-500">
                 <X size={12} />
               </button>
@@ -128,7 +158,7 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
         ) : (
           <button
             onClick={handleSubmit}
-            disabled={!input.trim()}
+            disabled={!input.trim() || tooLong}
             className="shrink-0 p-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             title="发送"
           >
@@ -140,6 +170,15 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
       {isUploading && (
         <p className="text-xs text-gray-400 mt-1">文件上传中...</p>
       )}
+      {length > MAX_MESSAGE_CHARS * 0.9 && (
+        <p className={`text-xs mt-1 ${tooLong ? 'text-red-600' : 'text-gray-400'}`}>
+          {length} / {MAX_MESSAGE_CHARS}
+          {tooLong && '：消息过长，请缩短或拆分；长文档请使用上传功能'}
+        </p>
+      )}
+      <p data-testid="disclaimer" className="text-[11px] leading-4 text-gray-400 mt-2">
+        AI 生成内容仅供参考，不构成法律意见，重要事项请咨询执业律师。请勿输入身份证号、银行卡号等敏感个人信息；对话与上传内容会发送至第三方大模型服务处理。
+      </p>
     </div>
   );
 }

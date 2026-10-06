@@ -48,7 +48,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 p-6">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-100 p-6">
       <form onSubmit={handleSubmit} className="w-full max-w-sm bg-white rounded-xl shadow p-6 space-y-4">
         <div className="flex items-center gap-2 justify-center">
           <Scale size={26} className="text-indigo-600" />
@@ -103,6 +103,9 @@ export default function LoginPage() {
           {mode === 'signin' ? '没有账号？注册' : '已有账号？登录'}
         </button>
       </form>
+      <p className="mt-4 max-w-sm text-center text-xs leading-5 text-gray-400">
+        本服务由 AI 生成内容，仅供参考，不构成法律意见。你的对话与上传文件会按账号保存，并发送至第三方大模型服务处理，请勿提交不必要的敏感个人信息。
+      </p>
     </div>
   );
 }

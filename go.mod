@@ -1,6 +1,6 @@
 module law-assistant
 
-go 1.24.0
+go 1.24.1
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.7.0
@@ -8,7 +8,9 @@ require (
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
+	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
 	github.com/meguminnnnnnnnn/go-openai v0.1.2
+	golang.org/x/text v0.14.0
 )
 
 require (

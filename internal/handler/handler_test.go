@@ -29,23 +29,31 @@ type testEnv struct {
 	h     http.Handler
 	files *store.FileStore
 	llm   *fakeLLM
+	dir   string // upload directory
 }
 
-func newTestEnv(t *testing.T) *testEnv {
+func newTestEnv(t *testing.T) *testEnv { return newTestEnvCfg(t, nil) }
+
+// newTestEnvCfg builds a test server; tweak may adjust the config (e.g. limits).
+func newTestEnvCfg(t *testing.T, tweak func(*config.Config)) *testEnv {
 	t.Helper()
 	authn, err := auth.New(context.Background(), auth.Config{JWTSecret: testSecret})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{FrontendURL: "http://localhost:5173", MaxUploadSize: 1 << 20}
-	files := store.NewFileStore(t.TempDir())
+	if tweak != nil {
+		tweak(cfg)
+	}
+	dir := t.TempDir()
+	files := store.NewFileStore(dir)
 	llm := newFakeLLM()
 	registry, err := model.NewRegistryWithFactory(model.DefaultIDs(), model.DefaultModelID, llm.factory)
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(cfg, agent.NewAgentManager(registry), store.NewSessionStore(), files, authn, registry)
-	return &testEnv{srv: srv, h: srv.SetupRoutes(), files: files, llm: llm}
+	return &testEnv{srv: srv, h: srv.SetupRoutes(), files: files, llm: llm, dir: dir}
 }
 
 func token(t *testing.T, user string) string {
@@ -125,6 +133,9 @@ func TestCORSPreflightPrecedesAuth(t *testing.T) {
 	rec := e.do("OPTIONS", "/api/chat", "", nil, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("preflight got %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Header().Get("Access-Control-Expose-Headers"), "Content-Disposition") {
+		t.Errorf("Content-Disposition must be exposed or cross-origin downloads lose their filename, got %q", rec.Header().Get("Access-Control-Expose-Headers"))
 	}
 	if !strings.Contains(rec.Header().Get("Access-Control-Allow-Headers"), "Authorization") {
 		t.Errorf("preflight must allow the Authorization header, got %q", rec.Header().Get("Access-Control-Allow-Headers"))
@@ -207,10 +218,10 @@ func TestUploadedFilesAreOwnedByUploader(t *testing.T) {
 		t.Fatalf("bad upload response: %v %s", err, rec.Body)
 	}
 
-	if got := e.srv.getFileContents("alice", []string{up.FileID}); !strings.Contains(got, "保密条款") {
+	if got := strings.Join(e.srv.getFileContents(context.Background(), "alice", []string{up.FileID}), ""); !strings.Contains(got, "保密条款") {
 		t.Errorf("owner should read own file, got %q", got)
 	}
-	if got := e.srv.getFileContents("bob", []string{up.FileID}); strings.Contains(got, "保密条款") {
+	if got := strings.Join(e.srv.getFileContents(context.Background(), "bob", []string{up.FileID}), ""); strings.Contains(got, "保密条款") {
 		t.Errorf("another user read alice's file: %q", got)
 	}
 }

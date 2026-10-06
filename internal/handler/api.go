@@ -9,6 +9,7 @@ import (
 	"law-assistant/internal/agent"
 	"law-assistant/internal/auth"
 	"law-assistant/internal/config"
+	"law-assistant/internal/limit"
 	"law-assistant/internal/model"
 	"law-assistant/internal/store"
 	"law-assistant/internal/tool"
@@ -19,14 +20,17 @@ type Server struct {
 	cfg          *config.Config
 	agentManager *agent.AgentManager
 	sessionStore store.SessionRepository
-	fileStore    *store.FileStore
+	fileStore    store.FileRepository
 	docParser    *tool.DocumentParser
 	auth         *auth.Authenticator
 	models       *model.Registry
+	chatRate     *limit.Rate
+	uploadRate   *limit.Rate
+	chatStreams  *limit.Concurrency
 }
 
 // NewServer creates a new server with all dependencies
-func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore store.SessionRepository, fileStore *store.FileStore, authn *auth.Authenticator, models *model.Registry) *Server {
+func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore store.SessionRepository, fileStore store.FileRepository, authn *auth.Authenticator, models *model.Registry) *Server {
 	return &Server{
 		cfg:          cfg,
 		agentManager: agentMgr,
@@ -35,6 +39,9 @@ func NewServer(cfg *config.Config, agentMgr *agent.AgentManager, sessionStore st
 		docParser:    tool.NewDocumentParser(),
 		auth:         authn,
 		models:       models,
+		chatRate:     limit.NewRate(cfg.ChatRatePerMinute, 0),
+		uploadRate:   limit.NewRate(cfg.UploadRatePerMin, 0),
+		chatStreams:  limit.NewConcurrency(cfg.MaxConcurrentChats),
 	}
 }
 
@@ -45,6 +52,7 @@ func (s *Server) SetupRoutes() http.Handler {
 	// API routes (all require authentication)
 	mux.HandleFunc("POST /api/chat", s.handleChat)
 	mux.HandleFunc("POST /api/upload", s.handleUpload)
+	mux.HandleFunc("POST /api/export/docx", s.handleExportDocx)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
@@ -81,6 +89,8 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", s.cfg.FrontendURL)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		// Without this a cross-origin page (Vercel -> API) cannot read these headers.
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, X-Session-ID, Retry-After")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		if r.Method == "OPTIONS" {
@@ -117,6 +127,13 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeAPIError sends a structured model/request error: {"code","model","message"}.
+// Codes for limits enforced by this server (as opposed to the upstream model's).
+const (
+	codeUserRateLimited = "USER_RATE_LIMITED"
+	codeTooManyStreams  = "TOO_MANY_STREAMS"
+	codeMessageTooLong  = "MESSAGE_TOO_LONG"
+)
+
 func writeAPIError(w http.ResponseWriter, e *model.APIError) {
 	writeJSON(w, e.Status, e)
 }

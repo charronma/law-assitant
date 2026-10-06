@@ -6,7 +6,7 @@
 
 - **法律咨询** - 多轮对话式法律问答，覆盖民事/刑事/行政/劳动法等领域
 - **诉状撰写** - 自动生成起诉状/答辩状/上诉状等规范法律文书
-- **合同优化** - 上传 Word/PDF 合同文件，审查风险条款并生成修改建议
+- **合同优化** - 上传 Word(.docx)/PDF/TXT/MD 合同文件，审查风险条款并生成修改建议。上传时即解析文本：扫描件/图片 PDF、旧版 .doc、损坏文件会被明确拒绝并提示原因，不会静默当作空文档发给模型
 - **证据整理** - 对证据材料进行分类、排序，生成规范证据清单
 - **取证指导** - 根据案件类型指导证据收集方向和注意事项
 - **沟通话术** - 生成律师与客户/当事人的沟通策略和话术模板
@@ -173,7 +173,7 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 - 消息只能写入属于自己的会话；`anon`（未登录）角色没有任何权限；`user_id` 不可被修改。
 - 每条消息记录本轮使用的模型 id（`chat_messages.model`，迁移 `20261005000000_chat_message_model.sql`）。
 - 触发器会在新增消息时更新会话的 `updated_at`，并用首条用户消息的前 20 个字符生成标题。
-- 上传的文件目前仍在本地磁盘（`UPLOAD_DIR`），不在数据库里。
+- 配置了 Supabase 时，上传文件存入私有 Storage bucket `uploads`（路径 `<user_id>/<file_id>.<ext>`），元数据和提取文本存 `public.uploaded_files`（RLS，同样使用用户自己的 JWT），重启/换实例后仍可引用；未配置时退回本地磁盘 + 内存（重启即失效）。需要先应用 `supabase/migrations/20261006000000_uploaded_files.sql`。删除会话不会删除已上传的文件。
 
 ## API 接口
 
@@ -183,7 +183,8 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 |------|------|------|
 | GET | /api/models | 可选模型列表与默认模型：`{"models":[{"id","label","tier"}],"default":"..."}` |
 | POST | /api/chat | 发送消息（SSE 流式响应）。可选字段 `model`，缺省使用默认模型，不在白名单内返回 400 `INVALID_MODEL` |
-| POST | /api/upload | 上传文件（Word/PDF） |
+| POST | /api/export/docx | 把一条回复（Markdown）导出为 Word：`{title?, content}` → `.docx`（标题/列表/表格/加粗/引用，末尾附免责声明） |
+| POST | /api/upload | 上传文件（.docx/.pdf/.txt/.md）。成功返回 `chars`/`preview`/`truncated`；无法提取文字时返回 422 `{code,message}`（`NO_TEXT`/`UNSUPPORTED_FORMAT`/`EXTRACT_FAILED`/`FILE_TOO_LARGE`） |
 | POST | /api/sessions | 创建会话 |
 | GET | /api/sessions | 获取会话列表 |
 | GET | /api/sessions/:id | 获取会话详情 |
@@ -201,6 +202,11 @@ cd web && npm install && VITE_AUTH_DISABLED=true npm run dev
 | QWEN_BASE_URL | 否 | https://dashscope.aliyuncs.com/compatible-mode/v1 | API 地址 |
 | SERVER_PORT | 否 | 8080 | 服务端口 |
 | UPLOAD_DIR | 否 | ./uploads | 文件上传目录 |
+| CHAT_RATE_PER_MINUTE | 否 | 20 | 每用户每分钟聊天请求数（令牌桶，0=不限）；超出返回 429 `USER_RATE_LIMITED` |
+| UPLOAD_RATE_PER_MINUTE | 否 | 10 | 每用户每分钟上传次数（0=不限） |
+| MAX_CONCURRENT_CHATS | 否 | 2 | 每用户同时生成的回答数（0=不限）；超出返回 429 `TOO_MANY_STREAMS` |
+| MAX_MESSAGE_CHARS | 否 | 8000 | 单条消息最大字符数；超出返回 413 `MESSAGE_TOO_LONG` |
+| MAX_HISTORY_CHARS | 否 | 30000 | 发送给模型的历史对话字符预算（只保留最近的整轮消息，数据库里的记录不受影响） |
 | FRONTEND_URL | 否 | http://localhost:5173 | 前端地址（CORS） |
 | SUPABASE_URL | 是* | - | Supabase 项目地址，用于获取 JWKS 校验 JWT |
 | SUPABASE_JWT_SECRET | 是* | - | 旧项目的 HS256 JWT 密钥（与 SUPABASE_URL 至少设置一个） |

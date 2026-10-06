@@ -7,19 +7,25 @@ function App() {
   const [currentModule, setCurrentModule] = useState<ModuleType>('consult');
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Below the md breakpoint the sidebar is an off-canvas drawer.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
   const handleModuleChange = useCallback((module: ModuleType) => {
     setCurrentModule(module);
     setCurrentSessionId(null);
+    setSidebarOpen(false);
   }, []);
 
   const handleSessionSelect = useCallback((session: Session) => {
     setCurrentModule(session.module);
     setCurrentSessionId(session.id);
+    setSidebarOpen(false);
   }, []);
 
   const handleNewChat = useCallback(() => {
     setCurrentSessionId(null);
+    setSidebarOpen(false);
   }, []);
 
   const handleSessionCreated = useCallback((sessionId: string) => {
@@ -28,7 +34,7 @@ function App() {
   }, []);
 
   return (
-    <div className="flex h-screen bg-gray-100">
+    <div className="flex h-dvh bg-gray-100">
       <Sidebar
         currentModule={currentModule}
         currentSessionId={currentSessionId}
@@ -36,12 +42,15 @@ function App() {
         onSessionSelect={handleSessionSelect}
         onNewChat={handleNewChat}
         refreshKey={refreshKey}
+        open={sidebarOpen}
+        onClose={closeSidebar}
       />
       <ChatWindow
         module={currentModule}
         sessionId={currentSessionId}
         onSessionCreated={handleSessionCreated}
         onNewChat={handleNewChat}
+        onOpenSidebar={() => setSidebarOpen(true)}
       />
     </div>
   );
