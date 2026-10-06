@@ -8,6 +8,7 @@ import ChatInput from './ChatInput';
 import ModelSelect from './ModelSelect';
 import ErrorBanner from './ErrorBanner';
 import RedlinePanel from './RedlinePanel';
+import { useRedlineJobs } from '../../hooks/useRedlineJobs';
 
 const MODULE_NAMES: Record<ModuleType, string> = {
   consult: '法律咨询',
@@ -59,6 +60,17 @@ export default function ChatWindow({ module, sessionId, onSessionCreated, onNewC
     onSessionsChanged,
     onError: handleChatError,
   });
+
+  // One revised-Word job per conversation; it keeps running while another conversation is on screen.
+  const redline = useRedlineJobs({
+    onModelError: (code, modelId) => {
+      if (code === 'QUOTA_EXHAUSTED' && modelId) markExhausted(modelId);
+    },
+  });
+  const { setViewing } = redline;
+  useEffect(() => {
+    setViewing(sessionId);
+  }, [sessionId, setViewing]);
 
   // Files attached anywhere in this conversation, and the request they came with.
   const fileIds = [...new Set(messages.flatMap(m => m.file_ids ?? []))];
@@ -131,19 +143,24 @@ export default function ChatWindow({ module, sessionId, onSessionCreated, onNewC
         isStreaming={isStreaming}
       />
 
-      {module === 'contract' && fileIds.length > 0 && (
+      {module === 'contract' && sessionId && (fileIds.length > 0 || redline.jobs[sessionId]) && (
+        // Keyed by conversation so no state (progress, draft instruction) leaks between them.
         <RedlinePanel
+          key={`redline-${sessionId}`}
           fileIds={fileIds}
           suggestedInstruction={firstAsk}
-          model={selected}
-          onModelError={(code, modelId) => {
-            if (code === 'QUOTA_EXHAUSTED' && modelId) markExhausted(modelId);
-          }}
+          job={redline.jobs[sessionId]}
+          onStart={(fileId, instruction) => void redline.start(sessionId, fileId, instruction, selected)}
+          onCancel={() => redline.cancel(sessionId)}
+          onDownload={() => redline.download(sessionId)}
+          onDismissError={() => redline.dismiss(sessionId)}
         />
       )}
 
       {/* Input */}
       <ChatInput
+        // Keyed by conversation: the draft and any attached-but-unsent files belong to one conversation.
+        key={`input-${sessionId ?? 'new'}`}
         onSend={sendMessage}
         onStop={stopStreaming}
         isStreaming={isStreaming}
