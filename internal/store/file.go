@@ -41,6 +41,8 @@ type FileRepository interface {
 	Create(ctx context.Context, userID string, f NewFile) (*UploadedFile, error)
 	// Get returns ErrFileNotFound for missing files and other users' files alike.
 	Get(ctx context.Context, userID, id string) (*UploadedFile, error)
+	// Open returns the stored original; ErrFileNotFound as for Get.
+	Open(ctx context.Context, userID, id string) (io.ReadCloser, error)
 	Delete(ctx context.Context, userID, id string) error
 }
 
@@ -109,6 +111,17 @@ func (fs *FileStore) Get(_ context.Context, userID, id string) (*UploadedFile, e
 	}
 	snapshot := f.UploadedFile
 	return &snapshot, nil
+}
+
+// Open returns the stored original of the user's file.
+func (fs *FileStore) Open(_ context.Context, userID, id string) (io.ReadCloser, error) {
+	fs.mu.RLock()
+	f, ok := fs.files[id]
+	fs.mu.RUnlock()
+	if !ok || f.UserID != userID {
+		return nil, fmt.Errorf("%w: %s", ErrFileNotFound, id)
+	}
+	return os.Open(f.path)
 }
 
 // Delete removes the user's file from the index and from disk.

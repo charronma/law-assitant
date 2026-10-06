@@ -75,6 +75,38 @@ export interface ChatError {
   message: string;
 }
 
+export interface FileInfo {
+  id: string;
+  filename: string;
+  size: number;
+  content_type: string;
+  chars: number;
+}
+
+export interface RedlineChange {
+  kind: 'edit' | 'insertion';
+  para: number;
+  find?: string;
+  replace?: string;
+  comment?: string;
+}
+
+export interface RedlineSkip {
+  kind: 'edit' | 'insertion';
+  para: number;
+  find?: string;
+  reason: string;
+}
+
+export interface RedlineResult {
+  filename?: string;
+  docx_base64?: string;
+  summary: string;
+  applied: RedlineChange[];
+  skipped: RedlineSkip[];
+  truncated?: boolean;
+}
+
 export interface UploadedFile {
   file_id: string;
   filename: string;

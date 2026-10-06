@@ -3,6 +3,7 @@ import { Bot, User, Copy, Check, FileDown, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import type { Message } from '../../types';
 import { exportDocx } from '../../services/api';
+import { saveBlob } from '../../lib/download';
 
 interface MessageBubbleProps {
   message: Message;
@@ -19,15 +20,7 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
     setExportError(null);
     try {
       const { blob, filename } = await exportDocx(message.content);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      // Revoking right away can cancel the download in some browsers (Safari).
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      saveBlob(blob, filename);
     } catch (err) {
       setExportError(err instanceof Error ? err.message : '导出失败');
     } finally {

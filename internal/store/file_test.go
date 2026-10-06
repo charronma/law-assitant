@@ -87,6 +87,14 @@ func (f *fakeSupabase) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(v)
 	}
 
+	if key, ok := strings.CutPrefix(r.URL.Path, "/storage/v1/object/authenticated/uploads/"); ok && r.Method == http.MethodGet {
+		if data, found := f.objects[key]; found {
+			_, _ = w.Write([]byte(data))
+		} else {
+			reply(404, map[string]string{"error": "not_found"})
+		}
+		return
+	}
 	if key, ok := strings.CutPrefix(r.URL.Path, "/storage/v1/object/uploads/"); ok {
 		switch r.Method {
 		case http.MethodPost:
@@ -240,5 +248,62 @@ func TestSupabaseFiles_NoTokenMeansNoRequest(t *testing.T) {
 	}
 	if len(fake.log) != 0 {
 		t.Errorf("unauthenticated call reached Supabase: %v", fake.log)
+	}
+}
+
+func TestSupabaseFiles_OpenReadsTheOriginalBack(t *testing.T) {
+	st, fake := newFakeSupabase(t)
+	f, err := st.Create(bg, userA, NewFile{Filename: "合同.docx", Size: 9, Text: "x", Content: strings.NewReader("ORIGINAL!")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := st.Open(bg, userA, f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(got) != "ORIGINAL!" {
+		t.Errorf("got %q", got)
+	}
+	// Reads use the authenticated route with the user's token.
+	last := fake.headers[len(fake.headers)-1]
+	if last.Get("Authorization") != "Bearer "+userJWT || last.Get("Apikey") != pubKey {
+		t.Errorf("headers: %v", last)
+	}
+	if !strings.Contains(fake.log[len(fake.log)-1], "/storage/v1/object/authenticated/uploads/"+userA+"/"+f.ID+".docx") {
+		t.Errorf("route: %s", fake.log[len(fake.log)-1])
+	}
+
+	other := "bbbbbbbb-0000-0000-0000-00000000000b"
+	if _, err := st.Open(bg, other, f.ID); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("another user's file: %v", err)
+	}
+	if _, err := st.Open(bg, userA, "../etc/passwd"); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("bad id: %v", err)
+	}
+	delete(fake.objects, userA+"/"+f.ID+".docx") // row exists, object gone
+	if _, err := st.Open(bg, userA, f.ID); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("missing object: %v", err)
+	}
+}
+
+func TestFileStore_OpenIsPerUser(t *testing.T) {
+	fs := NewFileStore(t.TempDir())
+	f, err := fs.Create(bg, "alice", NewFile{Filename: "a.docx", Text: "x", Content: strings.NewReader("DATA")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := fs.Open(bg, "alice", f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(b) != "DATA" {
+		t.Errorf("got %q", b)
+	}
+	if _, err := fs.Open(bg, "bob", f.ID); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("bob: %v", err)
 	}
 }

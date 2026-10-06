@@ -7,6 +7,7 @@ import MessageList from './MessageList';
 import ChatInput from './ChatInput';
 import ModelSelect from './ModelSelect';
 import ErrorBanner from './ErrorBanner';
+import RedlinePanel from './RedlinePanel';
 
 const MODULE_NAMES: Record<ModuleType, string> = {
   consult: '法律咨询',
@@ -58,6 +59,10 @@ export default function ChatWindow({ module, sessionId, onSessionCreated, onNewC
     onSessionsChanged,
     onError: handleChatError,
   });
+
+  // Files attached anywhere in this conversation, and the request they came with.
+  const fileIds = [...new Set(messages.flatMap(m => m.file_ids ?? []))];
+  const firstAsk = messages.find(m => m.role === 'user' && (m.file_ids?.length ?? 0) > 0)?.content ?? '';
 
   // Load session when sessionId changes
   useEffect(() => {
@@ -125,6 +130,17 @@ export default function ChatWindow({ module, sessionId, onSessionCreated, onNewC
         streamingContent={streamingContent}
         isStreaming={isStreaming}
       />
+
+      {module === 'contract' && fileIds.length > 0 && (
+        <RedlinePanel
+          fileIds={fileIds}
+          suggestedInstruction={firstAsk}
+          model={selected}
+          onModelError={(code, modelId) => {
+            if (code === 'QUOTA_EXHAUSTED' && modelId) markExhausted(modelId);
+          }}
+        />
+      )}
 
       {/* Input */}
       <ChatInput

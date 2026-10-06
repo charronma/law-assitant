@@ -28,9 +28,18 @@ type fakeLLM struct {
 	used []string            // model id of every call, in order
 	seen [][]*schema.Message // messages each call received
 	plan map[string]streamPlan
+	gen  map[string]func([]*schema.Message) (string, error) // non-streaming replies
 }
 
-func newFakeLLM() *fakeLLM { return &fakeLLM{plan: map[string]streamPlan{}} }
+func newFakeLLM() *fakeLLM {
+	return &fakeLLM{plan: map[string]streamPlan{}, gen: map[string]func([]*schema.Message) (string, error){}}
+}
+
+func (f *fakeLLM) setGenerate(modelID string, fn func([]*schema.Message) (string, error)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gen[modelID] = fn
+}
 
 func (f *fakeLLM) factory(_ context.Context, id string) (einomodel.BaseChatModel, error) {
 	return &fakeChatModel{llm: f, id: id}, nil
@@ -53,8 +62,20 @@ type fakeChatModel struct {
 	id  string
 }
 
-func (m *fakeChatModel) Generate(context.Context, []*schema.Message, ...einomodel.Option) (*schema.Message, error) {
-	return nil, errors.New("not used")
+func (m *fakeChatModel) Generate(_ context.Context, in []*schema.Message, _ ...einomodel.Option) (*schema.Message, error) {
+	m.llm.mu.Lock()
+	m.llm.used = append(m.llm.used, m.id)
+	m.llm.seen = append(m.llm.seen, append([]*schema.Message(nil), in...))
+	fn := m.llm.gen[m.id]
+	m.llm.mu.Unlock()
+	if fn == nil {
+		return nil, errors.New("no scripted Generate reply")
+	}
+	text, err := fn(in)
+	if err != nil {
+		return nil, err
+	}
+	return schema.AssistantMessage(text, nil), nil
 }
 
 func (m *fakeChatModel) Stream(_ context.Context, in []*schema.Message, _ ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
