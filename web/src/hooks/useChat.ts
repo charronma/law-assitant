@@ -8,8 +8,8 @@ interface UseChatOptions {
   /** Model for new requests; omit to let the server use its default. */
   model?: string;
   onSessionCreated?: (sessionId: string) => void;
-  /** A reply finished (even if the user has since left that conversation): titles and ordering changed server-side. */
-  onTurnFinished?: () => void;
+  /** The server-side conversation list changed (first token of a reply: the title now exists; reply finished: ordering). */
+  onSessionsChanged?: () => void;
   /** Called for every failed request (e.g. to remember which models ran out of quota). */
   onError?: (err: ChatError) => void;
 }
@@ -21,7 +21,7 @@ interface SendOptions {
   retry?: boolean;
 }
 
-export function useChat({ module, sessionId, model, onSessionCreated, onTurnFinished, onError }: UseChatOptions) {
+export function useChat({ module, sessionId, model, onSessionCreated, onSessionsChanged, onError }: UseChatOptions) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingContent, setStreamingContent] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -37,7 +37,7 @@ export function useChat({ module, sessionId, model, onSessionCreated, onTurnFini
   /** A session this hook created itself: its messages are already on screen, so don't reload (and wipe) them. */
   const ownSessionRef = useRef<string | null>(null);
   const onErrorRef = useRef(onError);
-  const onTurnFinishedRef = useRef(onTurnFinished);
+  const onSessionsChangedRef = useRef(onSessionsChanged);
   /**
    * Bumped every time the user navigates to another conversation. A request is
    * bound to the epoch it started in: once the epoch moves on, its callbacks
@@ -67,8 +67,8 @@ export function useChat({ module, sessionId, model, onSessionCreated, onTurnFini
     onErrorRef.current = onError;
   }, [onError]);
   useEffect(() => {
-    onTurnFinishedRef.current = onTurnFinished;
-  }, [onTurnFinished]);
+    onSessionsChangedRef.current = onSessionsChanged;
+  }, [onSessionsChanged]);
 
   const loadSession = useCallback(async (id: string) => {
     // The server may not have persisted the in-flight message yet (it is saved
@@ -96,6 +96,7 @@ export function useChat({ module, sessionId, model, onSessionCreated, onTurnFini
     const epoch = epochRef.current;
     /** True while the user is still looking at the conversation this request belongs to. */
     const attached = () => epochRef.current === epoch;
+    let seenFirstToken = false;
 
     const requestModel = opts?.model ?? model;
     const isRetry = opts?.retry === true;
@@ -152,6 +153,12 @@ export function useChat({ module, sessionId, model, onSessionCreated, onTurnFini
       },
       // onToken
       (token) => {
+        // The user's message is saved once the model starts answering, which is also when
+        // the conversation gets its title: refresh the list now rather than at the end.
+        if (!seenFirstToken) {
+          seenFirstToken = true;
+          onSessionsChangedRef.current?.();
+        }
         if (!attached()) return;
         // Update the ref synchronously: a setState updater runs lazily, so when the
         // last tokens and "done" arrive in the same tick onDone would read a stale ref
@@ -161,7 +168,7 @@ export function useChat({ module, sessionId, model, onSessionCreated, onTurnFini
       },
       // onDone - 只处理一次，避免 Strict Mode 或重复 SSE 导致回答出现两遍
       (messageId) => {
-        onTurnFinishedRef.current?.();
+        onSessionsChangedRef.current?.();
         if (!attached() || doneHandledRef.current) return;
         doneHandledRef.current = true;
         requestInFlightRef.current = false;
