@@ -10,7 +10,7 @@ COPY internal ./internal
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
 # ---- runtime ----
-FROM alpine:3.22
+FROM alpine:3.24
 # ca-certificates: the server calls DashScope and Supabase (JWKS) over HTTPS.
 RUN apk add --no-cache ca-certificates tzdata \
     && adduser -D -u 10001 app \
