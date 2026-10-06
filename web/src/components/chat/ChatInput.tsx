@@ -20,6 +20,7 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
   const [input, setInput] = useState('');
   const [uploadedFiles, setUploadedFiles] = useState<{ id: string; name: string; chars?: number; truncated: boolean }[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadFraction, setUploadFraction] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -49,9 +50,10 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
     if (!file) return;
 
     setIsUploading(true);
+    setUploadFraction(0);
     setUploadError(null);
     try {
-      const result = await uploadFile(file, sessionId || undefined);
+      const result = await uploadFile(file, sessionId || undefined, setUploadFraction);
       setUploadedFiles(prev => [
         ...prev,
         { id: result.file_id, name: result.filename, chars: result.chars, truncated: result.truncated === true },
@@ -169,7 +171,24 @@ export default function ChatInput({ onSend, onStop, isStreaming, module, session
       </div>
 
       {isUploading && (
-        <p className="text-xs text-gray-400 mt-1">文件上传中...</p>
+        <div className="mt-1" data-testid="upload-progress">
+          <div
+            role="progressbar"
+            aria-label="文件上传进度"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(uploadFraction * 100)}
+            className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200"
+          >
+            <div
+              className="h-full rounded-full bg-indigo-500 transition-[width] duration-150"
+              style={{ width: `${Math.round(uploadFraction * 100)}%` }}
+            />
+          </div>
+          <p className="mt-1 text-xs text-gray-500">
+            {uploadFraction < 1 ? `上传中 ${Math.round(uploadFraction * 100)}%` : '上传完成，正在解析文档…'}
+          </p>
+        </div>
       )}
       {length > MAX_MESSAGE_CHARS * 0.9 && (
         <p className={`text-xs mt-1 ${tooLong ? 'text-red-600' : 'text-gray-400'}`}>

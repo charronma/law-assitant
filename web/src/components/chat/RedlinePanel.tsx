@@ -34,6 +34,17 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
   const [instruction, setInstruction] = useState('');
   const [edited, setEdited] = useState(false);
   const [state, setState] = useState<State>({ phase: 'idle' });
+  // Waiting for the model has no measurable progress, so show elapsed time; the download that
+  // follows does (when the server announces the size).
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(0);
+  const [download, setDownload] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (startedAt === null) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [startedAt]);
 
   // Look up the names of the conversation's files; only .docx files qualify.
   const idsKey = fileIds.join(',');
@@ -59,14 +70,20 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
   const running = state.phase === 'running';
 
   const run = async () => {
+    const t0 = Date.now();
+    setStartedAt(t0);
+    setNow(t0);
+    setDownload(null);
     setState({ phase: 'running' });
     try {
-      const result = await createRedline(current.id, effectiveInstruction, model);
+      const result = await createRedline(current.id, effectiveInstruction, model, setDownload);
       if (result.docx_base64 && result.filename) {
         saveBlob(base64ToBlob(result.docx_base64, DOCX_MIME), result.filename);
       }
       setState({ phase: 'done', result });
+      setStartedAt(null);
     } catch (err) {
+      setStartedAt(null);
       if (err instanceof ApiError) onModelError(err.code, err.model);
       setState({ phase: 'error', message: err instanceof Error ? err.message : '生成失败，请重试' });
     }
@@ -130,10 +147,26 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
               className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
             >
               {running && <Loader2 size={14} className="animate-spin" />}
-              {running ? '正在审阅合同…' : '生成并下载'}
+              {running ? (download === null ? '正在审阅合同…' : `正在下载 ${Math.round(download * 100)}%`) : '生成并下载'}
             </button>
-            {running && <span className="text-xs text-gray-500">通常需要 30–90 秒，请不要关闭页面</span>}
+            {running && download === null && startedAt !== null && (
+              <span data-testid="redline-elapsed" className="text-xs text-gray-500">
+                通常需要 30–90 秒，请不要关闭页面 · 已用时 {Math.max(0, Math.floor((now - startedAt) / 1000))} 秒
+              </span>
+            )}
           </div>
+          {running && download !== null && (
+            <div
+              role="progressbar"
+              aria-label="修订版下载进度"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(download * 100)}
+              className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200"
+            >
+              <div className="h-full rounded-full bg-indigo-500 transition-[width] duration-150" style={{ width: `${Math.round(download * 100)}%` }} />
+            </div>
+          )}
 
           {state.phase === 'error' && (
             <div role="alert" data-testid="redline-error" className="flex items-start justify-between gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">

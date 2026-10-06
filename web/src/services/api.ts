@@ -58,21 +58,66 @@ export async function deleteSession(id: string): Promise<void> {
 }
 
 // Upload a file
-export async function uploadFile(file: File, sessionId?: string): Promise<UploadedFile> {
+/**
+ * Upload a file. onProgress receives the fraction (0..1) of the request body sent so far;
+ * it reaches 1 before the server has finished parsing the document.
+ */
+export async function uploadFile(
+  file: File,
+  sessionId?: string,
+  onProgress?: (fraction: number) => void,
+): Promise<UploadedFile> {
   const formData = new FormData();
   formData.append('file', file);
   if (sessionId) formData.append('session_id', sessionId);
+  const headers = await authHeaders();
 
-  const res = await apiFetch('/upload', {
-    method: 'POST',
-    body: formData,
+  // fetch() cannot report upload progress, XMLHttpRequest can.
+  return new Promise<UploadedFile>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/upload`);
+    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+    xhr.responseType = 'json';
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable && e.total > 0) onProgress?.(e.loaded / e.total);
+    };
+    xhr.onerror = () => reject(new Error('网络错误，文件上传失败'));
+    xhr.onabort = () => reject(new Error('上传已取消'));
+    xhr.ontimeout = () => reject(new Error('上传超时，请重试'));
+    xhr.onload = () => {
+      if (xhr.status === 401 && supabase) void supabase.auth.signOut();
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response as UploadedFile);
+        return;
+      }
+      // The server explains why it rejected the file (unreadable, scanned, .doc, too large...).
+      reject(new Error(toChatError(xhr.response, `文件上传失败（HTTP ${xhr.status}）`).message));
+    };
+    xhr.send(formData);
   });
-  if (!res.ok) {
-    // The server explains why it rejected the file (unreadable, scanned, .doc, too large...).
-    const body: unknown = await res.json().catch(() => null);
-    throw new Error(toChatError(body, `文件上传失败（HTTP ${res.status}）`).message);
+}
+
+/** Read a JSON response body, reporting progress when the server announced its size. */
+async function readJSONWithProgress<T>(res: Response, onProgress?: (fraction: number) => void): Promise<T> {
+  const total = Number(res.headers.get('Content-Length')) || 0;
+  if (!onProgress || !total || !res.body) return res.json();
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.length;
+    onProgress(Math.min(1, loaded / total));
   }
-  return res.json();
+  const all = new Uint8Array(loaded);
+  let off = 0;
+  for (const c of chunks) {
+    all.set(c, off);
+    off += c.length;
+  }
+  return JSON.parse(new TextDecoder().decode(all)) as T;
 }
 
 /** An API failure carrying the server's {code, model, message}. */
@@ -97,7 +142,12 @@ export async function getFileInfo(id: string): Promise<FileInfo> {
  * Ask the model to review an uploaded .docx and return it with the proposed changes
  * applied as tracked changes and comments. Takes a minute or so.
  */
-export async function createRedline(fileId: string, instruction: string, model?: string): Promise<RedlineResult> {
+export async function createRedline(
+  fileId: string,
+  instruction: string,
+  model?: string,
+  onDownloadProgress?: (fraction: number) => void,
+): Promise<RedlineResult> {
   const res = await apiFetch('/redline', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -107,7 +157,7 @@ export async function createRedline(fileId: string, instruction: string, model?:
     const body: unknown = await res.json().catch(() => null);
     throw new ApiError(toChatError(body, `生成失败（HTTP ${res.status}）`));
   }
-  return res.json();
+  return readJSONWithProgress<RedlineResult>(res, onDownloadProgress);
 }
 
 /** Render Markdown as a Word document; returns the file and the server-suggested name. */
