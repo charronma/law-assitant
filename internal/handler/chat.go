@@ -35,6 +35,10 @@ type ChatRequest struct {
 // separately in characters; this stops oversized payloads before decoding).
 const maxChatBodyBytes = 256 << 10
 
+// StoppedMarker ends a reply the user cut short; the web client appends the same
+// text locally, so a reopened conversation shows the reply exactly as it was left.
+const StoppedMarker = "\n\n[已停止生成]"
+
 // streamWriteTimeout bounds a single streaming chat response.
 const streamWriteTimeout = 10 * time.Minute
 
@@ -205,8 +209,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// Stream tokens to client
 	var fullContent strings.Builder
 	streamFailed := false
+	interrupted := false
 	for {
 		if recvErr != nil {
+			if !errors.Is(recvErr, io.EOF) && r.Context().Err() != nil {
+				// The client went away (Stop button, closed tab): not an upstream failure.
+				interrupted = true
+				break
+			}
 			if !errors.Is(recvErr, io.EOF) {
 				// Failure after output began: same JSON as a plain HTTP error,
 				// carried by an SSE "error" event.
@@ -229,6 +239,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// leave blank assistant turns in the history sent to the model)
 	msgID := ""
 	if fullContent.Len() > 0 {
+		if interrupted {
+			fullContent.WriteString(StoppedMarker)
+		}
 		// Detach from the request's cancellation: a client that disconnected
 		// mid-stream should not lose the reply that was already generated.
 		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
@@ -241,8 +254,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// A failed stream already ended with its error event.
-	if streamFailed {
+	// A failed stream already ended with its error event; an interrupted one has no reader left.
+	if streamFailed || interrupted {
 		return
 	}
 	sendSSEEvent(w, flusher, SSEEvent{Type: "done", MessageID: msgID})
