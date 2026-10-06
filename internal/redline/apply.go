@@ -56,6 +56,8 @@ func (r Result) AppliedCount() int { return len(r.Applied) }
 type span struct {
 	index int // Plan.Edits index
 
+	oa, ob int // the original text the edit targeted, before trimming
+
 	a, b   int    // change region; a == b is a pure insertion
 	repl   []rune // text to insert at b
 	change bool   // there is something to delete or insert
@@ -340,6 +342,7 @@ func resolveEdit(p *paragraph, e Edit, index int) (*span, string) {
 	s := &span{index: index, comment: strings.TrimSpace(e.Comment)}
 	s.hasComment = s.comment != ""
 	s.ca, s.cb = a0, b0
+	s.oa, s.ob = a0, b0
 
 	if e.Replace == nil || string(actual) == *e.Replace {
 		if !s.hasComment {
@@ -447,6 +450,11 @@ func endOwner(p *paragraph, x int) *node {
 }
 
 func conflicts(x, y *span) bool {
+	// Two edits aimed at overlapping original text are contradictory, however
+	// small the part that actually changes.
+	if x.oa < y.ob && y.oa < x.ob {
+		return true
+	}
 	if x.isIns() && y.isIns() && x.a == y.a {
 		return true
 	}

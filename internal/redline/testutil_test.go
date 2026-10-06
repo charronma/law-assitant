@@ -150,3 +150,21 @@ func checkComments(t testing.TB, docx []byte) {
 }
 
 func regexpMust(s string) *regexp.Regexp { return regexp.MustCompile(s) }
+
+// checkNewIDs verifies that every id the AI added is unique and unused by the original
+// (a real document may legitimately repeat ids across annotation kinds).
+func checkNewIDs(t testing.TB, orig, out []byte) {
+	t.Helper()
+	used := map[string]bool{}
+	for _, m := range idRe.FindAllStringSubmatch(documentXML(t, orig), -1) {
+		used[m[1]] = true
+	}
+	seen := map[string]bool{}
+	for _, tag := range regexp.MustCompile(`<w:(?:ins|del)\b[^>]*w:author="`+testAuthor+`"[^>]*>`).FindAllString(documentXML(t, out), -1) {
+		id := idRe.FindStringSubmatch(tag)[1]
+		if used[id] || seen[id] {
+			t.Errorf("AI revision id %s collides: %s", id, tag)
+		}
+		seen[id] = true
+	}
+}
