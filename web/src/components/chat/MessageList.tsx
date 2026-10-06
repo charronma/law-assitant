@@ -1,24 +1,56 @@
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Bot } from 'lucide-react';
 import type { Message } from '../../types';
 import MessageBubble from './MessageBubble';
 
+/** Within this distance of the bottom the list follows new content; further up the user is reading. */
+const STICK_THRESHOLD_PX = 160;
+
 interface MessageListProps {
+  /** Identifies the conversation on screen; changing it re-pins the list to the bottom without animation. */
+  conversationKey: string;
   messages: Message[];
   streamingContent: string;
   isStreaming: boolean;
 }
 
-export default function MessageList({ messages, streamingContent, isStreaming }: MessageListProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+export default function MessageList({ conversationKey, messages, streamingContent, isStreaming }: MessageListProps) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  /** Set when the conversation changes; consumed by the first render that has content to show. */
+  const pinPendingRef = useRef(true);
+  const keyRef = useRef(conversationKey);
+  const countRef = useRef(0);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingContent]);
+  // Runs before paint, so a switched conversation is already at the bottom on its first frame
+  // (a smooth scroll here is what made every switch visibly scroll down from the top).
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+
+    if (keyRef.current !== conversationKey) {
+      keyRef.current = conversationKey;
+      pinPendingRef.current = true;
+      countRef.current = 0;
+    }
+    if (pinPendingRef.current) {
+      if (messages.length === 0) return; // history still loading: wait for it
+      el.scrollTop = el.scrollHeight;
+      pinPendingRef.current = false;
+      countRef.current = messages.length;
+      return;
+    }
+
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_THRESHOLD_PX;
+    const appended = messages.length > countRef.current;
+    countRef.current = messages.length;
+    if (!nearBottom) return;
+    // Animate whole new messages; follow streaming tokens instantly so it does not lag or jitter.
+    el.scrollTo({ top: el.scrollHeight, behavior: appended && !streamingContent ? 'smooth' : 'auto' });
+  }, [conversationKey, messages, streamingContent]);
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div ref={scrollerRef} className="flex-1 overflow-y-auto">
       {messages.length === 0 && !isStreaming && (
         <div className="flex flex-col items-center justify-center h-full text-gray-400">
           <Bot size={48} className="mb-4 text-indigo-300" />
@@ -63,7 +95,6 @@ export default function MessageList({ messages, streamingContent, isStreaming }:
         </div>
       )}
 
-      <div ref={bottomRef} />
     </div>
   );
 }
