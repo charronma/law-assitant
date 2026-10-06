@@ -120,6 +120,7 @@ export default function ChatWindow({ module, sessionId, onSessionCreated, onNewC
 
       {/* Messages */}
       <MessageList
+        conversationKey={sessionId ?? 'new'}
         messages={messages}
         streamingContent={streamingContent}
         isStreaming={isStreaming}
