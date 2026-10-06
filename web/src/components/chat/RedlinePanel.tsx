@@ -1,61 +1,49 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { FileDiff, Loader2, ChevronDown, ChevronUp, X } from 'lucide-react';
-import { ApiError, cancelRedline, getFileInfo, getRedlineStatus, startRedline } from '../../services/api';
-import { base64ToBlob, saveBlob } from '../../lib/download';
-import type { FileInfo, RedlineResult, RedlineStatus } from '../../types';
-
-const POLL_MS = 1500;
-const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+import { getFileInfo } from '../../services/api';
+import type { RedlineView } from '../../hooks/useRedlineJobs';
+import type { FileInfo, RedlineResult } from '../../types';
 
 interface RedlinePanelProps {
   /** Files attached anywhere in the conversation, oldest first. */
   fileIds: string[];
   /** The user's original request, offered as the starting instruction. */
   suggestedInstruction: string;
-  /** Model picked in the header. */
-  model: string;
-  /** Reports model failures (e.g. quota) so the picker can flag the model. */
-  onModelError: (code: string | undefined, model: string | undefined) => void;
+  /** This conversation's job, if any. The panel is keyed by conversation, so it never shows another's. */
+  job: RedlineView | undefined;
+  onStart: (fileId: string, instruction: string) => void;
+  onCancel: () => void;
+  onDownload: () => void;
+  onDismissError: () => void;
 }
-
-type State =
-  | { phase: 'idle' }
-  | { phase: 'running' }
-  | { phase: 'done'; result: RedlineResult }
-  | { phase: 'error'; message: string };
 
 /**
  * Offers a Word version of an uploaded contract with the AI's changes written in as
  * tracked changes and comments, so the original formatting and revision history are kept.
  */
-export default function RedlinePanel({ fileIds, suggestedInstruction, model, onModelError }: RedlinePanelProps) {
+export default function RedlinePanel({
+  fileIds,
+  suggestedInstruction,
+  job,
+  onStart,
+  onCancel,
+  onDownload,
+  onDismissError,
+}: RedlinePanelProps) {
   const [files, setFiles] = useState<FileInfo[]>([]);
   const [open, setOpen] = useState(false);
   const [fileId, setFileId] = useState('');
   const [instruction, setInstruction] = useState('');
   const [edited, setEdited] = useState(false);
-  const [state, setState] = useState<State>({ phase: 'idle' });
-  // Waiting for the model has no measurable progress, so show elapsed time; the download that
-  // follows does (when the server announces the size).
-  const [startedAt, setStartedAt] = useState<number | null>(null);
-  const [now, setNow] = useState(0);
-  const [download, setDownload] = useState<number | null>(null);
-  const [progress, setProgress] = useState({ edits: 0, applying: false });
-  const jobRef = useRef<string | null>(null);
-  /** Bumped to abandon a poll loop (cancel, new run, unmount). */
-  const runRef = useRef(0);
-  useEffect(
-    () => () => {
-      runRef.current += 1;
-    },
-    [],
-  );
+  const [now, setNow] = useState(() => Date.now());
 
+  // Tick once a second while a job runs, to show the elapsed time.
+  const running = job?.phase === 'running';
   useEffect(() => {
-    if (startedAt === null) return;
+    if (!running) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
-  }, [startedAt]);
+  }, [running]);
 
   // Look up the names of the conversation's files; only .docx files qualify.
   const idsKey = fileIds.join(',');
@@ -76,66 +64,12 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
   // Start from the user's own request until they type their own.
   const effectiveInstruction = edited ? instruction : suggestedInstruction;
 
-  if (files.length === 0) return null;
+  // A running or finished job for this conversation keeps the panel visible even before
+  // the file names have loaded.
+  if (files.length === 0 && !job) return null;
   const current = files.find(f => f.id === fileId) ?? files[files.length - 1];
-  const running = state.phase === 'running';
-
-  const run = async () => {
-    const myRun = ++runRef.current;
-    const live = () => runRef.current === myRun;
-    const t0 = Date.now();
-    setStartedAt(t0);
-    setNow(t0);
-    setDownload(null);
-    setProgress({ edits: 0, applying: false });
-    setState({ phase: 'running' });
-    const stop = () => setStartedAt(null);
-    try {
-      const jobId = await startRedline(current.id, effectiveInstruction, model);
-      jobRef.current = jobId;
-      let failedPolls = 0;
-      for (;;) {
-        await new Promise(r => setTimeout(r, POLL_MS));
-        if (!live()) return;
-        let st: RedlineStatus;
-        try {
-          st = await getRedlineStatus(jobId, setDownload);
-          failedPolls = 0;
-        } catch (err) {
-          // A lost job is final; a dropped connection is worth a few retries.
-          if (err instanceof ApiError && err.code === 'JOB_LOST') throw err;
-          if (++failedPolls >= 5) throw new Error('网络连接不稳定，无法获取进度，请检查网络后重试', { cause: err });
-          continue;
-        }
-        if (!live()) return;
-        if (st.state === 'running') {
-          setProgress({ edits: st.edits_found, applying: st.phase === 'applying' });
-        } else if (st.state === 'error') {
-          throw new ApiError(st.error ?? { message: '生成失败，请重试' });
-        } else if (st.result) {
-          if (st.result.docx_base64 && st.result.filename) {
-            saveBlob(base64ToBlob(st.result.docx_base64, DOCX_MIME), st.result.filename);
-          }
-          setState({ phase: 'done', result: st.result });
-          stop();
-          return;
-        }
-      }
-    } catch (err) {
-      if (!live()) return;
-      stop();
-      if (err instanceof ApiError) onModelError(err.code, err.model);
-      setState({ phase: 'error', message: err instanceof Error ? err.message : '生成失败，请重试' });
-    }
-  };
-
-  const cancel = () => {
-    runRef.current += 1; // abandon the poll loop
-    if (jobRef.current) void cancelRedline(jobRef.current);
-    jobRef.current = null;
-    setStartedAt(null);
-    setState({ phase: 'idle' });
-  };
+  const download = job?.phase === 'running' ? job.download : null;
+  const elapsed = job?.phase === 'running' ? Math.max(0, Math.floor((now - job.startedAt) / 1000)) : 0;
 
   return (
     <div data-testid="redline-panel" className="mx-4 mb-2 rounded-xl border border-indigo-200 bg-indigo-50/60 text-sm">
@@ -146,7 +80,10 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
         aria-expanded={open}
       >
         <FileDiff size={16} className="shrink-0" />
-        <span className="flex-1">生成修订版 Word：在原文件上标出修改并附批注</span>
+        <span className="flex-1">
+          生成修订版 Word：在原文件上标出修改并附批注
+          {running && <span className="ml-2 text-xs font-normal text-indigo-600">（进行中）</span>}
+        </span>
         {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
       </button>
 
@@ -156,7 +93,7 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
             <label className="block text-xs text-gray-600">
               文件
               <select
-                value={current.id}
+                value={current?.id ?? ''}
                 onChange={e => setFileId(e.target.value)}
                 disabled={running}
                 className="mt-1 block w-full rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm"
@@ -169,7 +106,7 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
               </select>
             </label>
           )}
-          {files.length === 1 && <p className="text-xs text-gray-600">文件：{current.filename}</p>}
+          {files.length === 1 && current && <p className="text-xs text-gray-600">文件：{current.filename}</p>}
 
           <label className="block text-xs text-gray-600">
             修改要求（说明你的立场）
@@ -190,30 +127,30 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => void run()}
-              disabled={running}
+              onClick={() => current && onStart(current.id, effectiveInstruction)}
+              disabled={running || !current}
               className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
             >
               {running && <Loader2 size={14} className="animate-spin" />}
               {running ? (download === null ? '正在审阅合同…' : `正在下载 ${Math.round(download * 100)}%`) : '生成并下载'}
             </button>
-            {running && (
-              <button type="button" onClick={cancel} className="text-xs text-gray-500 underline hover:text-gray-700">
+            {job?.phase === 'running' && (
+              <button type="button" onClick={onCancel} className="text-xs text-gray-500 underline hover:text-gray-700">
                 取消
               </button>
             )}
-            {running && download === null && startedAt !== null && (
+            {job?.phase === 'running' && download === null && (
               <span data-testid="redline-elapsed" className="text-xs text-gray-500">
-                {progress.applying
+                {job.applying
                   ? '正在把修改写入文档'
-                  : progress.edits > 0
-                    ? `AI 已提出 ${progress.edits} 处修改，仍在审阅`
+                  : job.edits > 0
+                    ? `AI 已提出 ${job.edits} 处修改，仍在审阅`
                     : 'AI 正在阅读合同（通常需要 30–90 秒）'}
-                {' · '}已用时 {Math.max(0, Math.floor((now - startedAt) / 1000))} 秒
+                {' · '}已用时 {elapsed} 秒
               </span>
             )}
           </div>
-          {running && download !== null && (
+          {job?.phase === 'running' && download !== null && (
             <div
               role="progressbar"
               aria-label="修订版下载进度"
@@ -226,34 +163,41 @@ export default function RedlinePanel({ fileIds, suggestedInstruction, model, onM
             </div>
           )}
 
-          {state.phase === 'error' && (
+          {job?.phase === 'error' && (
             <div role="alert" data-testid="redline-error" className="flex items-start justify-between gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-              <span>{state.message}</span>
-              <button type="button" onClick={() => setState({ phase: 'idle' })} aria-label="关闭" className="shrink-0">
+              <span>{job.message}</span>
+              <button type="button" onClick={onDismissError} aria-label="关闭" className="shrink-0">
                 <X size={12} />
               </button>
             </div>
           )}
 
-          {state.phase === 'done' && <Result result={state.result} />}
+          {job?.phase === 'done' && <Result result={job.result} downloaded={job.downloaded} onDownload={onDownload} />}
         </div>
       )}
     </div>
   );
 }
 
-function Result({ result }: { result: RedlineResult }) {
+function Result({ result, downloaded, onDownload }: { result: RedlineResult; downloaded: boolean; onDownload: () => void }) {
   const [showSkipped, setShowSkipped] = useState(false);
   const none = !result.docx_base64;
   return (
     <div data-testid="redline-result" className="space-y-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700">
       {none ? (
-        <p className="font-medium text-gray-800">没有生成文件：{result.applied.length === 0 && result.skipped.length > 0 ? '模型提出的修改都无法写入文档。' : '模型认为无需修改。'}</p>
-      ) : (
-        <p className="font-medium text-green-700">
-          已生成并下载《{result.filename}》：写入 {result.applied.length} 处修订/批注
-          {result.skipped.length > 0 && `，${result.skipped.length} 处未能写入`}。请在 Word 的“审阅”中逐条接受或拒绝。
+        <p className="font-medium text-gray-800">
+          没有生成文件：{result.applied.length === 0 && result.skipped.length > 0 ? '模型提出的修改都无法写入文档。' : '模型认为无需修改。'}
         </p>
+      ) : (
+        <>
+          <p className="font-medium text-green-700">
+            {downloaded ? '已生成并下载' : '已生成（你离开时完成的）'}《{result.filename}》：写入 {result.applied.length} 处修订/批注
+            {result.skipped.length > 0 && `，${result.skipped.length} 处未能写入`}。请在 Word 的“审阅”中逐条接受或拒绝。
+          </p>
+          <button type="button" onClick={onDownload} className="rounded-md border border-indigo-300 px-2 py-1 font-medium text-indigo-700 hover:bg-indigo-50">
+            {downloaded ? '再次下载修订版' : '下载修订版'}
+          </button>
+        </>
       )}
       {result.summary && <p>{result.summary}</p>}
       {result.truncated && <p className="text-amber-700">文档较长，只审阅了前面的部分段落。</p>}
